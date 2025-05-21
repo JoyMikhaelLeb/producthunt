@@ -1,0 +1,5 @@
+selenium==3.141.0
+webdriver_manager==3.3.0
+firebase-admin==5.0.2
+google-cloud-firestore==2.1.0
+python==3.8.8
