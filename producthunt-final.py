@@ -207,246 +207,69 @@ async def process_daily_leaderboard(page, page_url, launch_date, last_processed_
 
     no_new_content_count = 0
     scroll_attempts = 0
-    prev_anchor_count = 0
+    prev_link_count = 0
 
-    # Use CSS selectors for better compatibility with nodriver
-    anchors_selector = "[data-test*='post-name'] a"
-    containers_selector = "[data-test*='post-name']"
+    # Helper function to clean URLs
+    def clean_url(url):
+        """Remove ?ref=footer or /reviews from the end of URLs"""
+        if '?ref=footer' in url:
+            url = url.split('?ref=footer')[0]
+        if url.endswith('/reviews'):
+            url = url[:-8]
+        return url
 
-    # Alternative selectors as fallback
-    alt_selectors = [
-        {"containers": "[data-test*='post-item']", "anchors": "[data-test*='post-item'] a[href*='/products/']"},
-        {"containers": "[data-test*='post-item']", "anchors": "[data-test*='post-item'] a[href*='/posts/']"},
-        {"containers": "section[data-test*='post']", "anchors": "section[data-test*='post'] a"},
-    ]
-
-    # Debug: Check if page loaded and what's on it
-    print("Checking page content...")
-    try:
-        # Get URL directly from page object
-        print(f"Current URL: {page.url}")
-
-        # Get page title using a simpler method
-        page_title = await safe_evaluate(page, 'document.title')
-        print(f"Page title: {page_title}")
-    except Exception as e:
-        print(f"Error checking page: {e}")
-        import traceback
-        traceback.print_exc()
-
-    # Wait for elements to appear
-    print("Waiting for post items to load...")
-    max_wait_attempts = 10
-    for wait_attempt in range(max_wait_attempts):
-        try:
-            element_check = await safe_evaluate(page, f'''() => {{
-                const containers = document.querySelectorAll('{containers_selector}');
-                const anchors = document.querySelectorAll('{anchors_selector}');
-                return {{
-                    containers: containers.length,
-                    anchors: anchors.length,
-                    sampleHTML: containers.length > 0 ? containers[0].outerHTML.substring(0, 300) : 'No containers found'
-                }};
-            }}''')
-
-            if element_check:
-                print(f"Wait attempt {wait_attempt + 1}: containers={element_check.get('containers', 0)}, anchors={element_check.get('anchors', 0)}")
-
-                if element_check.get('containers', 0) > 0:
-                    sample_html = element_check.get('sampleHTML', '')
-                    if sample_html and len(sample_html) > 200:
-                        sample_html = sample_html[:200]
-                    print(f"Elements found! Sample HTML: {sample_html}...")
-                    break
-
-            await asyncio.sleep(2)
-        except Exception as e:
-            print(f"Error during wait: {e}")
-            import traceback
-            traceback.print_exc()
-            await asyncio.sleep(2)
-    else:
-        print("WARNING: Primary selectors found no elements. Trying alternative selectors...")
-
-        # Try alternative selectors
-        for idx, alt_sel in enumerate(alt_selectors):
-            try:
-                alt_check = await safe_evaluate(page, f'''() => {{
-                    const containers = document.querySelectorAll('{alt_sel["containers"]}');
-                    const anchors = document.querySelectorAll('{alt_sel["anchors"]}');
-                    return {{
-                        containers: containers.length,
-                        anchors: anchors.length,
-                        sampleHTML: containers.length > 0 ? containers[0].outerHTML.substring(0, 300) : 'No containers'
-                    }};
-                }}''')
-
-                if alt_check:
-                    print(f"Alternative selector {idx + 1}: containers={alt_check.get('containers', 0)}, anchors={alt_check.get('anchors', 0)}")
-
-                    if alt_check.get('containers', 0) > 0 and alt_check.get('anchors', 0) > 0:
-                        print(f"Found elements with alternative selector {idx + 1}! Switching to it.")
-                        containers_selector = alt_sel["containers"]
-                        anchors_selector = alt_sel["anchors"]
-                        sample_html = alt_check.get('sampleHTML', '')[:200]
-                        print(f"Sample HTML: {sample_html}...")
-                        break
-            except Exception as e:
-                print(f"Error trying alternative selector {idx + 1}: {e}")
-        else:
-            print("ERROR: No selectors found any elements. The page structure may have changed.")
-            print("Attempting to analyze page structure...")
-
-            try:
-                structure_info = await safe_evaluate(page, '''() => {
-                    // Find all data-test attributes
-                    const allElements = document.querySelectorAll('[data-test]');
-                    const dataTests = new Set();
-                    allElements.forEach(el => {
-                        const dt = el.getAttribute('data-test');
-                        if (dt) dataTests.add(dt);
-                    });
-
-                    // Find all links
-                    const allLinks = document.querySelectorAll('a[href]');
-                    const linkSamples = [];
-                    for (let i = 0; i < Math.min(10, allLinks.length); i++) {
-                        linkSamples.push(allLinks[i].href);
-                    }
-
-                    return {
-                        dataTestAttributes: Array.from(dataTests).slice(0, 20),
-                        linkCount: allLinks.length,
-                        linkSamples: linkSamples,
-                        sectionTags: document.querySelectorAll('section').length,
-                        divTags: document.querySelectorAll('div').length
-                    };
-                }''')
-
-                if structure_info:
-                    print(f"Page structure analysis:")
-                    print(f"  - Total links: {structure_info.get('linkCount', 0)}")
-                    print(f"  - Section tags: {structure_info.get('sectionTags', 0)}")
-                    print(f"  - Div tags: {structure_info.get('divTags', 0)}")
-                    print(f"  - Data-test attributes found: {structure_info.get('dataTestAttributes', [])[:10]}")
-                    print(f"  - Sample links: {structure_info.get('linkSamples', [])[:5]}")
-            except Exception as e:
-                print(f"Could not analyze page structure: {e}")
+    print("Starting to extract product links...")
 
     while scroll_attempts < max_scroll_attempts:
         scroll_attempts += 1
 
-        # Get current counts BEFORE scrolling using JavaScript
+        # Get page HTML source
         try:
-            element_counts = await safe_evaluate(page, f'''() => {{
-                const containers = document.querySelectorAll('{containers_selector}');
-                const anchors = document.querySelectorAll('{anchors_selector}');
-                return {{
-                    containers: containers.length,
-                    anchors: anchors.length
-                }};
-            }}''')
+            html_content = await page.get_content()
 
-            if element_counts:
-                current_container_count = element_counts.get('containers', 0)
-                current_anchor_count = element_counts.get('anchors', 0)
-            else:
-                current_container_count = 0
-                current_anchor_count = 0
+            # Extract product URLs using regex
+            pattern = r'href=["\'](https?://www\.producthunt\.com/products/[^"\']+)["\']'
+            matches = re.findall(pattern, html_content)
+
+            # Also try to find /posts/ URLs
+            pattern_posts = r'href=["\'](/products/[^"\']+)["\']'
+            relative_matches = re.findall(pattern_posts, html_content)
+
+            # Convert relative URLs to absolute
+            for rel_url in relative_matches:
+                abs_url = urljoin(base_url, rel_url)
+                matches.append(abs_url)
+
+            # Clean and deduplicate URLs
+            for url in matches:
+                cleaned_url = clean_url(url)
+                if cleaned_url not in seen:
+                    seen.add(cleaned_url)
+                    all_search_results.append(cleaned_url)
+
+            current_link_count = len(all_search_results)
+
         except Exception as e:
-            print(f"Error getting elements: {e}")
-            current_container_count = 0
-            current_anchor_count = 0
+            print(f"Error extracting links: {e}")
+            current_link_count = len(all_search_results)
 
-        print(f"Scroll attempt {scroll_attempts}: containers={current_container_count}, anchors={current_anchor_count}")
+        print(f"Scroll attempt {scroll_attempts}: Total unique links found: {current_link_count}")
 
-        # Scroll to trigger lazy loading
-        if current_container_count > 0:
-            try:
-                # Scroll to the last container
-                await page.evaluate(f'''() => {{
-                    const containers = document.querySelectorAll('{containers_selector}');
-                    if (containers.length > 0) {{
-                        const lastContainer = containers[containers.length - 1];
-                        lastContainer.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
-                    }}
-                }}''')
-                await asyncio.sleep(2)
-                await page.evaluate('window.scrollBy(0, 200)')
-                await asyncio.sleep(4)
-            except Exception as e:
-                print("Targeted scroll failed:", e)
-                await page.evaluate('window.scrollBy(0, 400)')
-                await asyncio.sleep(4)
-        else:
-            await page.evaluate('window.scrollBy(0, 400)')
-            await asyncio.sleep(4)
-
-        # Re-fetch anchors and extract hrefs using JavaScript
-        try:
-            # Extract all hrefs directly using JavaScript
-            hrefs = await safe_evaluate(page, f'''() => {{
-                const anchors = document.querySelectorAll('{anchors_selector}');
-                const hrefs = [];
-                anchors.forEach(a => {{
-                    let href = a.getAttribute('href') ||
-                               a.getAttribute('data-href') ||
-                               a.getAttribute('data-url') ||
-                               a.getAttribute('data-link');
-                    if (href && href.trim() !== '') {{
-                        hrefs.push(href.trim());
-                    }}
-                }});
-                return hrefs;
-            }}''')
-
-            if hrefs and isinstance(hrefs, list):
-                new_anchor_count = len(hrefs)
-            else:
-                hrefs = []
-                new_anchor_count = 0
-        except Exception as e:
-            print(f"Error extracting hrefs: {e}")
-            hrefs = []
-            new_anchor_count = 0
-
-        # Determine whether new anchors were added
-        if new_anchor_count > prev_anchor_count:
+        # Check if new links were added
+        if current_link_count > prev_link_count:
             no_new_content_count = 0
-            added = new_anchor_count - prev_anchor_count
-            print(f"SUCCESS: anchors increased to {new_anchor_count} (added {added})")
+            added = current_link_count - prev_link_count
+            print(f"SUCCESS: links increased to {current_link_count} (added {added})")
+
+            # Show sample of newly added links
+            if all_search_results:
+                sample_size = min(3, len(all_search_results))
+                print(f"Sample links: {all_search_results[-sample_size:]}")
         else:
             no_new_content_count += 1
-            print(f"No new anchors found (attempt {no_new_content_count}/{max_no_content_attempts})")
+            print(f"No new links found (attempt {no_new_content_count}/{max_no_content_attempts})")
 
-        prev_anchor_count = new_anchor_count
-
-        # Process extracted hrefs
-        missing_href_count = 0
-        if hrefs:
-            for href in hrefs:
-                if not href or href.strip() == "":
-                    missing_href_count += 1
-                    continue
-
-                # Normalize relative URLs
-                try:
-                    abs_href = urljoin(base_url, href.strip())
-                except:
-                    abs_href = href.strip()
-
-                # Deduplicate
-                if abs_href not in seen:
-                    seen.add(abs_href)
-                    all_search_results.append(abs_href)
-
-        if missing_href_count > 0:
-            print(f"Anchors without an extractable URL this pass: {missing_href_count}")
-
-        # Show sample of newly added links for debugging
-        if new_anchor_count > prev_anchor_count and all_search_results:
-            sample_size = min(3, len(all_search_results))
-            print(f"Sample links: {all_search_results[-sample_size:]}")
+        prev_link_count = current_link_count
 
         # Stop conditions
         if no_new_content_count >= max_no_content_attempts:
@@ -457,7 +280,13 @@ async def process_daily_leaderboard(page, page_url, launch_date, last_processed_
             print(f"Stopping: reached max_links={max_links}.")
             break
 
-        await asyncio.sleep(1.0)
+        # Scroll to load more content
+        try:
+            await page.evaluate('window.scrollBy(0, 800)')
+            await asyncio.sleep(3)
+        except Exception as e:
+            print(f"Scroll error: {e}")
+            await asyncio.sleep(3)
 
     # Determine the start index based on last_processed_link
     if last_processed_link:
