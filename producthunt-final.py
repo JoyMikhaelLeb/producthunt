@@ -190,6 +190,119 @@ async def process_daily_leaderboard(page, page_url, launch_date, last_processed_
     anchors_selector = "[data-test*='post-name'] a"
     containers_selector = "[data-test*='post-name']"
 
+    # Alternative selectors as fallback
+    alt_selectors = [
+        {"containers": "[data-test*='post-item']", "anchors": "[data-test*='post-item'] a[href*='/products/']"},
+        {"containers": "[data-test*='post-item']", "anchors": "[data-test*='post-item'] a[href*='/posts/']"},
+        {"containers": "section[data-test*='post']", "anchors": "section[data-test*='post'] a"},
+    ]
+
+    # Debug: Check if page loaded and what's on it
+    print("Checking page content...")
+    try:
+        page_info = await page.evaluate('''() => {
+            return {
+                url: window.location.href,
+                title: document.title,
+                bodyText: document.body.innerText.substring(0, 200)
+            };
+        }''')
+        print(f"Current URL: {page_info['url']}")
+        print(f"Page title: {page_info['title']}")
+        print(f"Page content preview: {page_info['bodyText'][:100]}...")
+    except Exception as e:
+        print(f"Error checking page: {e}")
+
+    # Wait for elements to appear
+    print("Waiting for post items to load...")
+    max_wait_attempts = 10
+    for wait_attempt in range(max_wait_attempts):
+        try:
+            element_check = await page.evaluate(f'''() => {{
+                const containers = document.querySelectorAll('{containers_selector}');
+                const anchors = document.querySelectorAll('{anchors_selector}');
+                return {{
+                    containers: containers.length,
+                    anchors: anchors.length,
+                    sampleHTML: containers.length > 0 ? containers[0].outerHTML.substring(0, 300) : 'No containers found'
+                }};
+            }}''')
+
+            print(f"Wait attempt {wait_attempt + 1}: containers={element_check['containers']}, anchors={element_check['anchors']}")
+
+            if element_check['containers'] > 0:
+                print(f"Elements found! Sample HTML: {element_check['sampleHTML'][:200]}...")
+                break
+
+            await asyncio.sleep(2)
+        except Exception as e:
+            print(f"Error during wait: {e}")
+            await asyncio.sleep(2)
+    else:
+        print("WARNING: Primary selectors found no elements. Trying alternative selectors...")
+
+        # Try alternative selectors
+        for idx, alt_sel in enumerate(alt_selectors):
+            try:
+                alt_check = await page.evaluate(f'''() => {{
+                    const containers = document.querySelectorAll('{alt_sel["containers"]}');
+                    const anchors = document.querySelectorAll('{alt_sel["anchors"]}');
+                    return {{
+                        containers: containers.length,
+                        anchors: anchors.length,
+                        sampleHTML: containers.length > 0 ? containers[0].outerHTML.substring(0, 300) : 'No containers'
+                    }};
+                }}''')
+
+                print(f"Alternative selector {idx + 1}: containers={alt_check['containers']}, anchors={alt_check['anchors']}")
+
+                if alt_check['containers'] > 0 and alt_check['anchors'] > 0:
+                    print(f"Found elements with alternative selector {idx + 1}! Switching to it.")
+                    containers_selector = alt_sel["containers"]
+                    anchors_selector = alt_sel["anchors"]
+                    print(f"Sample HTML: {alt_check['sampleHTML'][:200]}...")
+                    break
+            except Exception as e:
+                print(f"Error trying alternative selector {idx + 1}: {e}")
+        else:
+            print("ERROR: No selectors found any elements. The page structure may have changed.")
+            print("Attempting to analyze page structure...")
+
+            try:
+                structure_info = await page.evaluate('''() => {
+                    // Find all data-test attributes
+                    const allElements = document.querySelectorAll('[data-test]');
+                    const dataTests = new Set();
+                    allElements.forEach(el => {
+                        const dt = el.getAttribute('data-test');
+                        if (dt) dataTests.add(dt);
+                    });
+
+                    // Find all links
+                    const allLinks = document.querySelectorAll('a[href]');
+                    const linkSamples = [];
+                    for (let i = 0; i < Math.min(10, allLinks.length); i++) {
+                        linkSamples.push(allLinks[i].href);
+                    }
+
+                    return {
+                        dataTestAttributes: Array.from(dataTests).slice(0, 20),
+                        linkCount: allLinks.length,
+                        linkSamples: linkSamples,
+                        sectionTags: document.querySelectorAll('section').length,
+                        divTags: document.querySelectorAll('div').length
+                    };
+                }''')
+
+                print(f"Page structure analysis:")
+                print(f"  - Total links: {structure_info['linkCount']}")
+                print(f"  - Section tags: {structure_info['sectionTags']}")
+                print(f"  - Div tags: {structure_info['divTags']}")
+                print(f"  - Data-test attributes found: {structure_info['dataTestAttributes'][:10]}")
+                print(f"  - Sample links: {structure_info['linkSamples'][:5]}")
+            except Exception as e:
+                print(f"Could not analyze page structure: {e}")
+
     while scroll_attempts < max_scroll_attempts:
         scroll_attempts += 1
 
