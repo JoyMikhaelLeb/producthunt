@@ -55,11 +55,13 @@ async def login():
             '--no-sandbox',
             '--disable-dev-shm-usage',
             '--start-maximized',
+            '--disable-blink-features=AutomationControlled',
         ]
     )
 
+    # Get the main tab
     page = await browser.get(url)
-    await asyncio.sleep(2)
+    await asyncio.sleep(3)
 
     return browser, page
 
@@ -184,19 +186,24 @@ async def process_daily_leaderboard(page, page_url, launch_date, last_processed_
     scroll_attempts = 0
     prev_anchor_count = 0
 
-    anchors_xpath = "//*[contains(@data-test, 'post-name')]//a"
-    containers_xpath = "//*[contains(@data-test, 'post-name')]"
+    # Use CSS selectors for better compatibility with nodriver
+    anchors_selector = "[data-test*='post-name'] a"
+    containers_selector = "[data-test*='post-name']"
 
     while scroll_attempts < max_scroll_attempts:
         scroll_attempts += 1
 
         # Get current counts BEFORE scrolling
+        containers = None
+        anchors = None
         try:
-            containers = await page.select_all(containers_xpath)
-            anchors = await page.select_all(anchors_xpath)
+            # Use query_selector_all via evaluate for better reliability
+            containers = await page.query_selector_all(containers_selector)
+            anchors = await page.query_selector_all(anchors_selector)
             current_container_count = len(containers) if containers else 0
             current_anchor_count = len(anchors) if anchors else 0
-        except:
+        except Exception as e:
+            print(f"Error getting elements: {e}")
             current_container_count = 0
             current_anchor_count = 0
 
@@ -220,9 +227,11 @@ async def process_daily_leaderboard(page, page_url, launch_date, last_processed_
 
         # Re-fetch anchors after waiting
         try:
-            anchors = await page.select_all(anchors_xpath)
+            anchors = await page.query_selector_all(anchors_selector)
             new_anchor_count = len(anchors) if anchors else 0
-        except:
+        except Exception as e:
+            print(f"Error re-fetching anchors: {e}")
+            anchors = None
             new_anchor_count = 0
 
         # Determine whether new anchors were added
@@ -900,36 +909,49 @@ async def getNormalmodel(page, each_link, company_info, launch_date):
 async def main():
     """Main execution function"""
     task_start_date = time.asctime()
+    print(f"Task started at: {task_start_date}")
 
-    # Initialize browser
-    browser, page = await login()
-
-    username = ""
-    password = ""
-
-    # Calculate yesterday's date
-    yesterday_fulltime = datetime.now() - timedelta(days=1)
-    formatted_date = yesterday_fulltime.strftime("%Y/%-m/%d")
-    print(f"Processing date: {formatted_date}")
-
-    start_date = end_date = formatted_date
-
-    # Uncomment to process specific date range:
-    # start_date = "2025/8/22"
-    # end_date = "2025/8/24"
-
+    browser = None
     try:
+        # Initialize browser
+        print("Initializing browser...")
+        browser, page = await login()
+        print("Browser initialized successfully!")
+
+        username = ""
+        password = ""
+
+        # Calculate yesterday's date
+        yesterday_fulltime = datetime.now() - timedelta(days=1)
+        # Format date without leading zeros (cross-platform compatible)
+        formatted_date = f"{yesterday_fulltime.year}/{yesterday_fulltime.month}/{yesterday_fulltime.day}"
+        print(f"Processing date: {formatted_date}")
+
+        start_date = end_date = formatted_date
+
+        # Uncomment to process specific date range:
+        # start_date = "2025/8/22"
+        # end_date = "2025/8/24"
+
         # Process Product Hunt data
         await sign_in_and_extract(page, username, password, start_date, end_date)
         print("Processing completed successfully!")
+
+    except KeyboardInterrupt:
+        print("\nScript interrupted by user")
     except Exception as e:
         print(f"Error during processing: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
-        # Close browser
-        try:
-            browser.stop()
-        except:
-            pass
+        # Close browser gracefully
+        if browser:
+            try:
+                print("Closing browser...")
+                browser.stop()
+                await asyncio.sleep(1)
+            except Exception as e:
+                print(f"Error closing browser: {e}")
 
 
 # Run the async main function
