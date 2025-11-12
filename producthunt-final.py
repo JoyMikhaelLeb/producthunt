@@ -30,6 +30,29 @@ if not firebase_admin._apps:
 db = firestore.client()
 
 
+async def safe_evaluate(page, script):
+    """Helper function to safely evaluate JavaScript and extract values from nodriver's RemoteObject"""
+    try:
+        result = await page.evaluate(script)
+
+        # If result has a value attribute, extract it
+        if hasattr(result, 'value'):
+            return result.value
+
+        # If result is already a primitive type, return it
+        if isinstance(result, (str, int, float, bool, list, dict, type(None))):
+            return result
+
+        # Try to convert to dict if it has items
+        if hasattr(result, '__dict__'):
+            return result.__dict__
+
+        return result
+    except Exception as e:
+        print(f"Error in safe_evaluate: {e}")
+        return None
+
+
 async def moveToElement(page, target_selector):
     """Move to element using nodriver"""
     try:
@@ -200,25 +223,23 @@ async def process_daily_leaderboard(page, page_url, launch_date, last_processed_
     # Debug: Check if page loaded and what's on it
     print("Checking page content...")
     try:
-        page_info = await page.evaluate('''() => {
-            return {
-                url: window.location.href,
-                title: document.title,
-                bodyText: document.body.innerText.substring(0, 200)
-            };
-        }''')
-        print(f"Current URL: {page_info['url']}")
-        print(f"Page title: {page_info['title']}")
-        print(f"Page content preview: {page_info['bodyText'][:100]}...")
+        # Get URL directly from page object
+        print(f"Current URL: {page.url}")
+
+        # Get page title using a simpler method
+        page_title = await safe_evaluate(page, 'document.title')
+        print(f"Page title: {page_title}")
     except Exception as e:
         print(f"Error checking page: {e}")
+        import traceback
+        traceback.print_exc()
 
     # Wait for elements to appear
     print("Waiting for post items to load...")
     max_wait_attempts = 10
     for wait_attempt in range(max_wait_attempts):
         try:
-            element_check = await page.evaluate(f'''() => {{
+            element_check = await safe_evaluate(page, f'''() => {{
                 const containers = document.querySelectorAll('{containers_selector}');
                 const anchors = document.querySelectorAll('{anchors_selector}');
                 return {{
@@ -228,15 +249,21 @@ async def process_daily_leaderboard(page, page_url, launch_date, last_processed_
                 }};
             }}''')
 
-            print(f"Wait attempt {wait_attempt + 1}: containers={element_check['containers']}, anchors={element_check['anchors']}")
+            if element_check:
+                print(f"Wait attempt {wait_attempt + 1}: containers={element_check.get('containers', 0)}, anchors={element_check.get('anchors', 0)}")
 
-            if element_check['containers'] > 0:
-                print(f"Elements found! Sample HTML: {element_check['sampleHTML'][:200]}...")
-                break
+                if element_check.get('containers', 0) > 0:
+                    sample_html = element_check.get('sampleHTML', '')
+                    if sample_html and len(sample_html) > 200:
+                        sample_html = sample_html[:200]
+                    print(f"Elements found! Sample HTML: {sample_html}...")
+                    break
 
             await asyncio.sleep(2)
         except Exception as e:
             print(f"Error during wait: {e}")
+            import traceback
+            traceback.print_exc()
             await asyncio.sleep(2)
     else:
         print("WARNING: Primary selectors found no elements. Trying alternative selectors...")
@@ -244,7 +271,7 @@ async def process_daily_leaderboard(page, page_url, launch_date, last_processed_
         # Try alternative selectors
         for idx, alt_sel in enumerate(alt_selectors):
             try:
-                alt_check = await page.evaluate(f'''() => {{
+                alt_check = await safe_evaluate(page, f'''() => {{
                     const containers = document.querySelectorAll('{alt_sel["containers"]}');
                     const anchors = document.querySelectorAll('{alt_sel["anchors"]}');
                     return {{
@@ -254,14 +281,16 @@ async def process_daily_leaderboard(page, page_url, launch_date, last_processed_
                     }};
                 }}''')
 
-                print(f"Alternative selector {idx + 1}: containers={alt_check['containers']}, anchors={alt_check['anchors']}")
+                if alt_check:
+                    print(f"Alternative selector {idx + 1}: containers={alt_check.get('containers', 0)}, anchors={alt_check.get('anchors', 0)}")
 
-                if alt_check['containers'] > 0 and alt_check['anchors'] > 0:
-                    print(f"Found elements with alternative selector {idx + 1}! Switching to it.")
-                    containers_selector = alt_sel["containers"]
-                    anchors_selector = alt_sel["anchors"]
-                    print(f"Sample HTML: {alt_check['sampleHTML'][:200]}...")
-                    break
+                    if alt_check.get('containers', 0) > 0 and alt_check.get('anchors', 0) > 0:
+                        print(f"Found elements with alternative selector {idx + 1}! Switching to it.")
+                        containers_selector = alt_sel["containers"]
+                        anchors_selector = alt_sel["anchors"]
+                        sample_html = alt_check.get('sampleHTML', '')[:200]
+                        print(f"Sample HTML: {sample_html}...")
+                        break
             except Exception as e:
                 print(f"Error trying alternative selector {idx + 1}: {e}")
         else:
@@ -269,7 +298,7 @@ async def process_daily_leaderboard(page, page_url, launch_date, last_processed_
             print("Attempting to analyze page structure...")
 
             try:
-                structure_info = await page.evaluate('''() => {
+                structure_info = await safe_evaluate(page, '''() => {
                     // Find all data-test attributes
                     const allElements = document.querySelectorAll('[data-test]');
                     const dataTests = new Set();
@@ -294,12 +323,13 @@ async def process_daily_leaderboard(page, page_url, launch_date, last_processed_
                     };
                 }''')
 
-                print(f"Page structure analysis:")
-                print(f"  - Total links: {structure_info['linkCount']}")
-                print(f"  - Section tags: {structure_info['sectionTags']}")
-                print(f"  - Div tags: {structure_info['divTags']}")
-                print(f"  - Data-test attributes found: {structure_info['dataTestAttributes'][:10]}")
-                print(f"  - Sample links: {structure_info['linkSamples'][:5]}")
+                if structure_info:
+                    print(f"Page structure analysis:")
+                    print(f"  - Total links: {structure_info.get('linkCount', 0)}")
+                    print(f"  - Section tags: {structure_info.get('sectionTags', 0)}")
+                    print(f"  - Div tags: {structure_info.get('divTags', 0)}")
+                    print(f"  - Data-test attributes found: {structure_info.get('dataTestAttributes', [])[:10]}")
+                    print(f"  - Sample links: {structure_info.get('linkSamples', [])[:5]}")
             except Exception as e:
                 print(f"Could not analyze page structure: {e}")
 
@@ -308,7 +338,7 @@ async def process_daily_leaderboard(page, page_url, launch_date, last_processed_
 
         # Get current counts BEFORE scrolling using JavaScript
         try:
-            element_counts = await page.evaluate(f'''() => {{
+            element_counts = await safe_evaluate(page, f'''() => {{
                 const containers = document.querySelectorAll('{containers_selector}');
                 const anchors = document.querySelectorAll('{anchors_selector}');
                 return {{
@@ -316,8 +346,13 @@ async def process_daily_leaderboard(page, page_url, launch_date, last_processed_
                     anchors: anchors.length
                 }};
             }}''')
-            current_container_count = element_counts['containers']
-            current_anchor_count = element_counts['anchors']
+
+            if element_counts:
+                current_container_count = element_counts.get('containers', 0)
+                current_anchor_count = element_counts.get('anchors', 0)
+            else:
+                current_container_count = 0
+                current_anchor_count = 0
         except Exception as e:
             print(f"Error getting elements: {e}")
             current_container_count = 0
@@ -350,7 +385,7 @@ async def process_daily_leaderboard(page, page_url, launch_date, last_processed_
         # Re-fetch anchors and extract hrefs using JavaScript
         try:
             # Extract all hrefs directly using JavaScript
-            hrefs = await page.evaluate(f'''() => {{
+            hrefs = await safe_evaluate(page, f'''() => {{
                 const anchors = document.querySelectorAll('{anchors_selector}');
                 const hrefs = [];
                 anchors.forEach(a => {{
@@ -365,7 +400,11 @@ async def process_daily_leaderboard(page, page_url, launch_date, last_processed_
                 return hrefs;
             }}''')
 
-            new_anchor_count = len(hrefs) if hrefs else 0
+            if hrefs and isinstance(hrefs, list):
+                new_anchor_count = len(hrefs)
+            else:
+                hrefs = []
+                new_anchor_count = 0
         except Exception as e:
             print(f"Error extracting hrefs: {e}")
             hrefs = []
@@ -552,7 +591,7 @@ async def getNormalmodel(page, each_link, company_info, launch_date):
 
     # Extract website URL from script tag
     try:
-        script_content = await page.evaluate('''() => {
+        script_content = await safe_evaluate(page, '''() => {
             const scriptTag = document.querySelector('script[type="application/json"]');
             return scriptTag ? scriptTag.innerHTML : '';
         }''')
@@ -662,7 +701,7 @@ async def getNormalmodel(page, each_link, company_info, launch_date):
             print("Processing SocialLinks div...")
             for div in social_links_divs:
                 # Get sibling div links
-                sibling_links = await page.evaluate('''(div) => {
+                sibling_links_result = await page.evaluate('''(div) => {
                     const links = [];
                     let nextSibling = div.nextElementSibling;
                     while (nextSibling) {
@@ -678,52 +717,59 @@ async def getNormalmodel(page, each_link, company_info, launch_date):
                     return links;
                 }''', div)
 
-                for link_data in sibling_links:
-                    link_soc = link_data['href']
-                    social_name = link_data['text'].lower() if link_data['text'] else ''
+                # Extract value from RemoteObject if needed
+                if hasattr(sibling_links_result, 'value'):
+                    sibling_links = sibling_links_result.value
+                else:
+                    sibling_links = sibling_links_result
 
-                    print(f"Found social link: {link_soc}")
+                if sibling_links and isinstance(sibling_links, list):
+                    for link_data in sibling_links:
+                        link_soc = link_data['href']
+                        social_name = link_data['text'].lower() if link_data['text'] else ''
 
-                    # Determine social platform from URL if name not available
-                    if not social_name:
-                        if 'twitter.com/' in link_soc.lower() or 'x.com/' in link_soc.lower():
-                            social_name = 'twitter'
-                        elif 'facebook.com/' in link_soc.lower():
-                            social_name = 'facebook'
-                        elif 'linkedin.com/' in link_soc.lower():
-                            social_name = 'linkedin'
-                        elif 'instagram.com/' in link_soc.lower():
-                            social_name = 'instagram'
-                        elif 'github.com/' in link_soc.lower():
-                            social_name = 'github'
-                        else:
-                            social_name = 'unknown'
+                        print(f"Found social link: {link_soc}")
 
-                    if social_name in allowed_social_links:
-                        category = allowed_social_links[social_name]
-
-                        if social_name == 'linkedin':
-                            # Extract LinkedIn handle
-                            clean_href = link_soc.split('?')[0] if '?' in link_soc else link_soc
-                            clean_href_lower = clean_href.lower()
-
-                            if '/company/' in clean_href_lower:
-                                handle = clean_href.split('/company/')[1].split('/')[0]
-                            elif '/in/' in clean_href_lower:
-                                handle = clean_href.split('/in/')[1].split('/')[0]
-                            elif '/products/' in clean_href_lower:
-                                handle = clean_href
+                        # Determine social platform from URL if name not available
+                        if not social_name:
+                            if 'twitter.com/' in link_soc.lower() or 'x.com/' in link_soc.lower():
+                                social_name = 'twitter'
+                            elif 'facebook.com/' in link_soc.lower():
+                                social_name = 'facebook'
+                            elif 'linkedin.com/' in link_soc.lower():
+                                social_name = 'linkedin'
+                            elif 'instagram.com/' in link_soc.lower():
+                                social_name = 'instagram'
+                            elif 'github.com/' in link_soc.lower():
+                                social_name = 'github'
                             else:
-                                handle = clean_href.split('linkedin.com/')[1].split('/')[0]
+                                social_name = 'unknown'
 
-                            social_links_dict[category].append(handle)
-                            print(f"Added LinkedIn handle {handle}")
+                        if social_name in allowed_social_links:
+                            category = allowed_social_links[social_name]
+
+                            if social_name == 'linkedin':
+                                # Extract LinkedIn handle
+                                clean_href = link_soc.split('?')[0] if '?' in link_soc else link_soc
+                                clean_href_lower = clean_href.lower()
+
+                                if '/company/' in clean_href_lower:
+                                    handle = clean_href.split('/company/')[1].split('/')[0]
+                                elif '/in/' in clean_href_lower:
+                                    handle = clean_href.split('/in/')[1].split('/')[0]
+                                elif '/products/' in clean_href_lower:
+                                    handle = clean_href
+                                else:
+                                    handle = clean_href.split('linkedin.com/')[1].split('/')[0]
+
+                                social_links_dict[category].append(handle)
+                                print(f"Added LinkedIn handle {handle}")
+                            else:
+                                social_links_dict[category].append(link_soc)
+                                print(f"Added {link_soc} to {category}")
                         else:
-                            social_links_dict[category].append(link_soc)
-                            print(f"Added {link_soc} to {category}")
-                    else:
-                        other_social_links.append(link_soc)
-                        print(f"Added {link_soc} to other_social_links")
+                            other_social_links.append(link_soc)
+                            print(f"Added {link_soc} to other_social_links")
 
     except Exception as e:
         print(f"Error processing social links: {e}")
@@ -845,7 +891,7 @@ async def getNormalmodel(page, each_link, company_info, launch_date):
         if maker_cards:
             for card in maker_cards:
                 try:
-                    card_links = await page.evaluate('''(card) => {
+                    card_links_result = await page.evaluate('''(card) => {
                         const links = [];
                         const anchors = card.querySelectorAll('a[href]');
                         anchors.forEach(a => {
@@ -854,8 +900,16 @@ async def getNormalmodel(page, each_link, company_info, launch_date):
                         return links;
                     }''', card)
 
-                    links_and_texts.extend(card_links)
-                except:
+                    # Extract value from RemoteObject if needed
+                    if hasattr(card_links_result, 'value'):
+                        card_links = card_links_result.value
+                    else:
+                        card_links = card_links_result
+
+                    if card_links and isinstance(card_links, list):
+                        links_and_texts.extend(card_links)
+                except Exception as e:
+                    print(f"Error extracting card links: {e}")
                     continue
 
         links_of_profiles = list(set(links_and_texts))
@@ -892,7 +946,7 @@ async def getNormalmodel(page, each_link, company_info, launch_date):
                     links_section = await page.select("h2:contains('Links') ~ div", timeout=10)
 
                     if links_section:
-                        profile_link_data = await page.evaluate('''(section) => {
+                        profile_link_data_result = await page.evaluate('''(section) => {
                             const links = [];
                             const anchors = section.querySelectorAll('a[href]');
                             anchors.forEach(a => {
@@ -904,8 +958,15 @@ async def getNormalmodel(page, each_link, company_info, launch_date):
                             return links;
                         }''', links_section)
 
-                        for link_data in profile_link_data:
-                            profile_links[link_data['category']] = link_data['href']
+                        # Extract value from RemoteObject if needed
+                        if hasattr(profile_link_data_result, 'value'):
+                            profile_link_data = profile_link_data_result.value
+                        else:
+                            profile_link_data = profile_link_data_result
+
+                        if profile_link_data and isinstance(profile_link_data, list):
+                            for link_data in profile_link_data:
+                                profile_links[link_data['category']] = link_data['href']
 
                 except Exception as e:
                     print(f"Error extracting profile links: {e}")
