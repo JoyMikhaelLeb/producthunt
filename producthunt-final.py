@@ -193,15 +193,18 @@ async def process_daily_leaderboard(page, page_url, launch_date, last_processed_
     while scroll_attempts < max_scroll_attempts:
         scroll_attempts += 1
 
-        # Get current counts BEFORE scrolling
-        containers = None
-        anchors = None
+        # Get current counts BEFORE scrolling using JavaScript
         try:
-            # Use query_selector_all via evaluate for better reliability
-            containers = await page.query_selector_all(containers_selector)
-            anchors = await page.query_selector_all(anchors_selector)
-            current_container_count = len(containers) if containers else 0
-            current_anchor_count = len(anchors) if anchors else 0
+            element_counts = await page.evaluate(f'''() => {{
+                const containers = document.querySelectorAll('{containers_selector}');
+                const anchors = document.querySelectorAll('{anchors_selector}');
+                return {{
+                    containers: containers.length,
+                    anchors: anchors.length
+                }};
+            }}''')
+            current_container_count = element_counts['containers']
+            current_anchor_count = element_counts['anchors']
         except Exception as e:
             print(f"Error getting elements: {e}")
             current_container_count = 0
@@ -210,10 +213,16 @@ async def process_daily_leaderboard(page, page_url, launch_date, last_processed_
         print(f"Scroll attempt {scroll_attempts}: containers={current_container_count}, anchors={current_anchor_count}")
 
         # Scroll to trigger lazy loading
-        if containers and len(containers) > 0:
+        if current_container_count > 0:
             try:
-                last_container = containers[-1]
-                await last_container.scroll_into_view()
+                # Scroll to the last container
+                await page.evaluate(f'''() => {{
+                    const containers = document.querySelectorAll('{containers_selector}');
+                    if (containers.length > 0) {{
+                        const lastContainer = containers[containers.length - 1];
+                        lastContainer.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
+                    }}
+                }}''')
                 await asyncio.sleep(2)
                 await page.evaluate('window.scrollBy(0, 200)')
                 await asyncio.sleep(4)
@@ -225,13 +234,28 @@ async def process_daily_leaderboard(page, page_url, launch_date, last_processed_
             await page.evaluate('window.scrollBy(0, 400)')
             await asyncio.sleep(4)
 
-        # Re-fetch anchors after waiting
+        # Re-fetch anchors and extract hrefs using JavaScript
         try:
-            anchors = await page.query_selector_all(anchors_selector)
-            new_anchor_count = len(anchors) if anchors else 0
+            # Extract all hrefs directly using JavaScript
+            hrefs = await page.evaluate(f'''() => {{
+                const anchors = document.querySelectorAll('{anchors_selector}');
+                const hrefs = [];
+                anchors.forEach(a => {{
+                    let href = a.getAttribute('href') ||
+                               a.getAttribute('data-href') ||
+                               a.getAttribute('data-url') ||
+                               a.getAttribute('data-link');
+                    if (href && href.trim() !== '') {{
+                        hrefs.push(href.trim());
+                    }}
+                }});
+                return hrefs;
+            }}''')
+
+            new_anchor_count = len(hrefs) if hrefs else 0
         except Exception as e:
-            print(f"Error re-fetching anchors: {e}")
-            anchors = None
+            print(f"Error extracting hrefs: {e}")
+            hrefs = []
             new_anchor_count = 0
 
         # Determine whether new anchors were added
@@ -245,26 +269,10 @@ async def process_daily_leaderboard(page, page_url, launch_date, last_processed_
 
         prev_anchor_count = new_anchor_count
 
-        # Extract URLs from anchors
+        # Process extracted hrefs
         missing_href_count = 0
-        if anchors:
-            for a in anchors:
-                href = None
-                try:
-                    href = await a.get_attribute("href")
-                except:
-                    href = None
-
-                # Fallback to common data attributes
-                if not href or href.strip() == "":
-                    try:
-                        href = (await a.get_attribute("data-href") or
-                                await a.get_attribute("data-url") or
-                                await a.get_attribute("data-link") or
-                                await a.get_attribute("data-qa-url"))
-                    except:
-                        href = None
-
+        if hrefs:
+            for href in hrefs:
                 if not href or href.strip() == "":
                     missing_href_count += 1
                     continue
@@ -282,6 +290,11 @@ async def process_daily_leaderboard(page, page_url, launch_date, last_processed_
 
         if missing_href_count > 0:
             print(f"Anchors without an extractable URL this pass: {missing_href_count}")
+
+        # Show sample of newly added links for debugging
+        if new_anchor_count > prev_anchor_count and all_search_results:
+            sample_size = min(3, len(all_search_results))
+            print(f"Sample links: {all_search_results[-sample_size:]}")
 
         # Stop conditions
         if no_new_content_count >= max_no_content_attempts:
