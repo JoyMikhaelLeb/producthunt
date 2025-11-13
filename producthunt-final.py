@@ -281,13 +281,13 @@ async def process_daily_leaderboard(page, page_url, launch_date, last_processed_
             print(f"Stopping: reached max_links={max_links}.")
             break
 
-        # Scroll to load more content
+        # Scroll to load more content (slower scrolling for better loading)
         try:
             await page.evaluate('window.scrollBy(0, 800)')
-            await asyncio.sleep(3)
+            await asyncio.sleep(5)  # Increased from 3 to 5 seconds
         except Exception as e:
             print(f"Scroll error: {e}")
-            await asyncio.sleep(3)
+            await asyncio.sleep(5)
 
     # Determine the start index based on last_processed_link
     if last_processed_link:
@@ -313,11 +313,7 @@ async def process_daily_leaderboard(page, page_url, launch_date, last_processed_
         if '?' in doc_id:
             doc_id = doc_id.split("?")[0]
 
-        doc_ref = db.collection("ph").document(doc_id)
-        if doc_ref.get().exists:
-            print("not processing this as it already exists")
-            continue
-
+        # Always process the link (even if it exists in Firebase)
         print(f"Processing link: {each_link}")
         company_info = {}
         start_time = datetime.now()
