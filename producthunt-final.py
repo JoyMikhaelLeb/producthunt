@@ -72,10 +72,11 @@ async def login():
     url = 'https://www.producthunt.com/'
 
     # nodriver automatically handles anti-bot measures
+    # Use browser_executable_path if you have Chrome/Chromium installed in a specific location
     browser = await uc.start(
         headless=False,  # Set to True for headless mode
+        sandbox=False,  # Disable sandbox (required on some systems)
         browser_args=[
-            '--no-sandbox',
             '--disable-dev-shm-usage',
             '--start-maximized',
             '--disable-blink-features=AutomationControlled',
