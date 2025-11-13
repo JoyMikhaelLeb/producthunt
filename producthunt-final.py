@@ -395,7 +395,7 @@ async def process_daily_leaderboard(page, page_url, launch_date, last_processed_
 
 
 async def getNormalmodel(page, each_link, company_info, launch_date):
-    """Extract product information and team details"""
+    """Extract product information and team details using same paths as BeautifulSoup script"""
 
     company_info['launch_date'] = launch_date
 
@@ -416,463 +416,243 @@ async def getNormalmodel(page, each_link, company_info, launch_date):
             await page.get(current_url + "/makers")
 
     await asyncio.sleep(5)
-    links_websites = []
 
-    # Extract website URL from script tag
-    try:
-        script_content = await safe_evaluate(page, '''() => {
-            const scriptTag = document.querySelector('script[type="application/json"]');
-            return scriptTag ? scriptTag.innerHTML : '';
-        }''')
+    # Get page HTML content for extraction
+    html_content = await page.get_content()
 
-        if script_content:
-            start_keyword = '"websiteUrl":"'
-            start_index = script_content.find(start_keyword)
-            if start_index != -1:
-                start_index += len(start_keyword)
-                end_index = script_content.find('"', start_index)
-                website = script_content[start_index:end_index]
-            else:
-                website = ""
-        else:
-            website = ""
+    # Extract website URL from JSON in script tag (same as BeautifulSoup)
+    website = ""
+    if '"websiteUrl":"' in html_content:
+        start = html_content.find('"websiteUrl":"') + len('"websiteUrl":"')
+        end = html_content.find('"', start)
+        website = html_content[start:end]
+        print(f"✓ Extracted website from JSON: {website}")
 
-        if website == "l.for(" or website == "":
-            try:
-                website_elem = await page.select("div[data-sentry-component='Links'] a", timeout=3)
-                if website_elem:
-                    website = await website_elem.get_attribute("href")
-                else:
-                    raise Exception("Website not found")
-            except:
-                try:
-                    website_elem = await page.select("div[data-sentry-component='Status'] a", timeout=3)
-                    if website_elem:
-                        website_url = await website_elem.get_attribute("href")
-                        website = website_url.split("?ref")[0] if "?ref" in website_url else website_url
-                    else:
-                        website = ""
-                except:
-                    website = ""
-
-        print("Extracted Website URL:", website)
-        company_info['website'] = website
-
-    except Exception as e:
-        print(f"Error extracting website: {e}")
-        company_info['website'] = ""
-
-    # Extract all additional website links
-    try:
-        # Get links from Status section
-        other_website_elems = await page.select_all("div[data-sentry-component='Status'] a")
-        if other_website_elems:
-            for website_link in other_website_elems:
-                extra_link = await website_link.get_attribute("href")
-                if extra_link:
-                    extra_link = extra_link.split("?ref=")[0]
-                    links_websites.append(extra_link)
-
-        # Get links from Social Links section
-        social_website_elems = await page.select_all("div[data-sentry-component='SocialLinks'] ~ div a")
-        if social_website_elems:
-            for social_link in social_website_elems:
-                extra_link = await social_link.get_attribute("href")
-                if extra_link:
-                    extra_link = extra_link.split("?ref=")[0]
-                    if extra_link not in links_websites:
-                        links_websites.append(extra_link)
-
-        print(f"Found all links: {links_websites}")
-
-        # Filter social and special links
-        if len(links_websites) > 0:
-            filtered_links = [link for link in links_websites if link != website]
-
-            social_and_special_links = []
-            for link in filtered_links:
-                link_lower = link.lower()
-                if any(platform in link_lower for platform in [
-                    'twitter.com/', 'x.com/', 'facebook.com/', 'linkedin.com/',
-                    'instagram.com/', 'github.com/', 'medium.com/', 'telegram.com/',
-                    'producthunt.com/r/', 'play.google.com/store', 'apps.apple.com',
-                    'itunes.apple.com', 'chrome.google.com/webstore',
-                    'marketplace.visualstudio.com'
-                ]):
-                    social_and_special_links.append(link)
-                    print(f"Added social/special link: {link}")
-
-            company_info['company_social_temp'] = social_and_special_links if social_and_special_links else []
-        else:
-            company_info['company_social_temp'] = []
-
-    except Exception as e:
-        print(f"Error extracting additional website links: {e}")
-        company_info['company_social_temp'] = []
-
-    # Process social links
-    allowed_social_links = {
-        'twitter': 'twitter_id',
-        'x': 'twitter_id',
-        'facebook': 'facebook_id',
-        'linkedin': 'li_id',
-        'instagram': 'instagram_id',
-        'github': 'github_id'
-    }
-
-    social_links_dict = {key: [] for key in allowed_social_links.values()}
-    other_social_links = []
-
-    try:
-        social_links_divs = await page.select_all("div[data-sentry-component='SocialLinks']")
-
-        if social_links_divs:
-            print("Processing SocialLinks div...")
-            for div in social_links_divs:
-                # Get sibling div links
-                sibling_links_result = await page.evaluate('''(div) => {
-                    const links = [];
-                    let nextSibling = div.nextElementSibling;
-                    while (nextSibling) {
-                        const anchors = nextSibling.querySelectorAll('a');
-                        anchors.forEach(a => {
-                            if (a.href) {
-                                const divText = a.querySelector('div') ? a.querySelector('div').textContent : '';
-                                links.push({href: a.href, text: divText});
-                            }
-                        });
-                        nextSibling = nextSibling.nextElementSibling;
-                    }
-                    return links;
-                }''', div)
-
-                # Extract value from RemoteObject if needed
-                if hasattr(sibling_links_result, 'value'):
-                    sibling_links = sibling_links_result.value
-                else:
-                    sibling_links = sibling_links_result
-
-                if sibling_links and isinstance(sibling_links, list):
-                    for link_data in sibling_links:
-                        link_soc = link_data['href']
-                        social_name = link_data['text'].lower() if link_data['text'] else ''
-
-                        print(f"Found social link: {link_soc}")
-
-                        # Determine social platform from URL if name not available
-                        if not social_name:
-                            if 'twitter.com/' in link_soc.lower() or 'x.com/' in link_soc.lower():
-                                social_name = 'twitter'
-                            elif 'facebook.com/' in link_soc.lower():
-                                social_name = 'facebook'
-                            elif 'linkedin.com/' in link_soc.lower():
-                                social_name = 'linkedin'
-                            elif 'instagram.com/' in link_soc.lower():
-                                social_name = 'instagram'
-                            elif 'github.com/' in link_soc.lower():
-                                social_name = 'github'
-                            else:
-                                social_name = 'unknown'
-
-                        if social_name in allowed_social_links:
-                            category = allowed_social_links[social_name]
-
-                            if social_name == 'linkedin':
-                                # Extract LinkedIn handle
-                                clean_href = link_soc.split('?')[0] if '?' in link_soc else link_soc
-                                clean_href_lower = clean_href.lower()
-
-                                if '/company/' in clean_href_lower:
-                                    handle = clean_href.split('/company/')[1].split('/')[0]
-                                elif '/in/' in clean_href_lower:
-                                    handle = clean_href.split('/in/')[1].split('/')[0]
-                                elif '/products/' in clean_href_lower:
-                                    handle = clean_href
-                                else:
-                                    handle = clean_href.split('linkedin.com/')[1].split('/')[0]
-
-                                social_links_dict[category].append(handle)
-                                print(f"Added LinkedIn handle {handle}")
-                            else:
-                                social_links_dict[category].append(link_soc)
-                                print(f"Added {link_soc} to {category}")
-                        else:
-                            other_social_links.append(link_soc)
-                            print(f"Added {link_soc} to other_social_links")
-
-    except Exception as e:
-        print(f"Error processing social links: {e}")
-
-    # Store social links
-    company_info['company_social'] = {k: v for k, v in social_links_dict.items() if v}
-
-    if other_social_links:
-        company_info['company_social']['others'] = other_social_links
-
-    print(f"After Social Links processing: {company_info.get('company_social', {})}")
-
-    # Process company_social_temp into final structure
-    if 'company_social_temp' in company_info and company_info['company_social_temp']:
-        print("Processing company_social_temp...")
-        main_website = company_info.get('website', '').lower()
-        main_website_clean = main_website.split('?ref=')[0] if '?ref=' in main_website else main_website
-
-        for temp_link in company_info['company_social_temp']:
-            temp_link_clean = temp_link.lower().split('?ref=')[0] if '?ref=' in temp_link.lower() else temp_link.lower()
-
-            if main_website_clean and temp_link_clean == main_website_clean:
-                continue
-
-            found_social = False
-            temp_link_lower = temp_link.lower()
-
-            if 'twitter.com/' in temp_link_lower or 'x.com/' in temp_link_lower:
-                if 'twitter_id' not in company_info['company_social']:
-                    company_info['company_social']['twitter_id'] = []
-                elif not isinstance(company_info['company_social']['twitter_id'], list):
-                    company_info['company_social']['twitter_id'] = [company_info['company_social']['twitter_id']]
-                company_info['company_social']['twitter_id'].append(temp_link)
-                found_social = True
-
-            elif 'facebook.com/' in temp_link_lower:
-                if 'facebook_id' not in company_info['company_social']:
-                    company_info['company_social']['facebook_id'] = []
-                elif not isinstance(company_info['company_social']['facebook_id'], list):
-                    company_info['company_social']['facebook_id'] = [company_info['company_social']['facebook_id']]
-                company_info['company_social']['facebook_id'].append(temp_link)
-                found_social = True
-
-            elif 'linkedin.com/' in temp_link_lower:
-                if 'li_id' not in company_info['company_social']:
-                    company_info['company_social']['li_id'] = []
-                elif not isinstance(company_info['company_social']['li_id'], list):
-                    company_info['company_social']['li_id'] = [company_info['company_social']['li_id']]
-                company_info['company_social']['li_id'].append(temp_link)
-                found_social = True
-
-            elif 'instagram.com/' in temp_link_lower:
-                if 'instagram_id' not in company_info['company_social']:
-                    company_info['company_social']['instagram_id'] = []
-                elif not isinstance(company_info['company_social']['instagram_id'], list):
-                    company_info['company_social']['instagram_id'] = [company_info['company_social']['instagram_id']]
-                company_info['company_social']['instagram_id'].append(temp_link)
-                found_social = True
-
-            elif 'github.com/' in temp_link_lower:
-                if 'github_id' not in company_info['company_social']:
-                    company_info['company_social']['github_id'] = []
-                elif not isinstance(company_info['company_social']['github_id'], list):
-                    company_info['company_social']['github_id'] = [company_info['company_social']['github_id']]
-                company_info['company_social']['github_id'].append(temp_link)
-                found_social = True
-
-            if not found_social:
-                if 'others' not in company_info['company_social']:
-                    company_info['company_social']['others'] = []
-                company_info['company_social']['others'].append(temp_link)
-
-        del company_info['company_social_temp']
-
-    # Final processing of social links
-    if 'company_social' in company_info:
-        social_copy = company_info['company_social'].copy()
-
-        for key, value in social_copy.items():
-            if isinstance(value, list) and key != 'others':
-                if value:
-                    if key == 'li_id':
-                        linkedin_url = value[0] if isinstance(value, list) else value
-                        if 'linkedin.com/' in str(linkedin_url).lower():
-                            if '/company/' in linkedin_url:
-                                handle = linkedin_url.split('/company/')[1].split('/')[0].split('?')[0]
-                            elif '/in/' in linkedin_url:
-                                handle = linkedin_url.split('/in/')[1].split('/')[0].split('?')[0]
-                            else:
-                                handle = linkedin_url
-                            company_info['company_social'][key] = handle
-                        else:
-                            company_info['company_social'][key] = value[0]
-                    else:
-                        company_info['company_social'][key] = value[0]
-                else:
-                    del company_info['company_social'][key]
-
-    # Extract team members
-    try:
-        links_and_texts = []
-
-        # Click "Show all" buttons if present
+    # Fallback: extract from anchor tag
+    if not website:
         try:
-            show_all_buttons = await page.select_all("*:contains('Show all')")
-            if show_all_buttons:
-                for button in show_all_buttons:
-                    try:
-                        await button.click()
-                        await asyncio.sleep(1)
-                    except:
-                        pass
+            website_elem = await page.select("a[href^='http']", timeout=3)
+            if website_elem:
+                href = await website_elem.get_attribute("href")
+                if href and "producthunt.com" not in href:
+                    website = href
+                    print(f"✓ Extracted website from anchor: {website}")
         except:
             pass
 
-        # Get all maker cards
-        maker_cards = await page.select_all("section[data-test*='maker-card-']")
+    company_info['website'] = website or ""
+    print(f"Website: {company_info['website']}")
 
-        if maker_cards:
-            for card in maker_cards:
-                try:
-                    card_links_result = await page.evaluate('''(card) => {
-                        const links = [];
-                        const anchors = card.querySelectorAll('a[href]');
-                        anchors.forEach(a => {
-                            if (a.href) links.push(a.href);
-                        });
-                        return links;
-                    }''', card)
+    # Extract social links from JSON in script tag (same as BeautifulSoup)
+    links_websites = []
 
-                    # Extract value from RemoteObject if needed
-                    if hasattr(card_links_result, 'value'):
-                        card_links = card_links_result.value
-                    else:
-                        card_links = card_links_result
+    # Twitter URL
+    if '"twitterUrl":"' in html_content:
+        start = html_content.find('"twitterUrl":"') + len('"twitterUrl":"')
+        if html_content[start:start+4] == 'http':
+            end = html_content.find('"', start)
+            twitter_url = html_content[start:end]
+            if twitter_url:
+                links_websites.append(twitter_url)
+                print(f"✓ Found Twitter from JSON: {twitter_url}")
 
-                    if card_links and isinstance(card_links, list):
-                        links_and_texts.extend(card_links)
-                except Exception as e:
-                    print(f"Error extracting card links: {e}")
-                    continue
+    # LinkedIn URL
+    if '"linkedinUrl":"' in html_content:
+        start = html_content.find('"linkedinUrl":"') + len('"linkedinUrl":"')
+        if html_content[start:start+4] == 'http':
+            end = html_content.find('"', start)
+            linkedin_url = html_content[start:end]
+            if linkedin_url:
+                links_websites.append(linkedin_url)
+                print(f"✓ Found LinkedIn from JSON: {linkedin_url}")
 
-        links_of_profiles = list(set(links_and_texts))
+    # Facebook URL
+    if '"facebookUrl":"' in html_content:
+        start = html_content.find('"facebookUrl":"') + len('"facebookUrl":"')
+        if html_content[start:start+4] == 'http':
+            end = html_content.find('"', start)
+            facebook_url = html_content[start:end]
+            if facebook_url:
+                links_websites.append(facebook_url)
+                print(f"✓ Found Facebook from JSON: {facebook_url}")
+
+    # Instagram URL
+    if '"instagramUrl":"' in html_content:
+        start = html_content.find('"instagramUrl":"') + len('"instagramUrl":"')
+        if html_content[start:start+4] == 'http':
+            end = html_content.find('"', start)
+            instagram_url = html_content[start:end]
+            if instagram_url:
+                links_websites.append(instagram_url)
+                print(f"✓ Found Instagram from JSON: {instagram_url}")
+
+    # GitHub URL
+    if '"githubUrl":"' in html_content:
+        start = html_content.find('"githubUrl":"') + len('"githubUrl":"')
+        if html_content[start:start+4] == 'http':
+            end = html_content.find('"', start)
+            github_url = html_content[start:end]
+            if github_url:
+                links_websites.append(github_url)
+                print(f"✓ Found GitHub from JSON: {github_url}")
+
+    # Process social links using the same logic as BeautifulSoup script
+    def process_social_links_dict(links_list, main_website=""):
+        """Convert a list of social links into a categorized dictionary"""
+        if not links_list:
+            return {}
+
+        main_website_clean = main_website.lower().split('?ref=')[0].rstrip('/') if main_website else ""
+        result = {}
+
+        def set_or_append(key, val):
+            if not val:
+                return
+            if key in result:
+                if not isinstance(result[key], list):
+                    result[key] = [result[key]]
+                result[key].append(val)
+            else:
+                result[key] = val
+
+        for link in links_list:
+            link_clean = link.lower().split('?ref=')[0].rstrip('/')
+
+            # Skip if it's the main website
+            if main_website_clean and link_clean == main_website_clean:
+                continue
+
+            # Categorize the link
+            if 'twitter.com/' in link_clean or 'x.com/' in link_clean:
+                set_or_append('twitter_id', link)
+            elif 'linkedin.com/in/' in link_clean:
+                # Extract LinkedIn ID (everything after /in/)
+                match = re.search(r'linkedin\.com/in/([^/?]+)', link_clean)
+                if match:
+                    li_id = match.group(1)
+                    set_or_append('li_id', li_id)
+                else:
+                    set_or_append('li_id', link)
+            elif 'linkedin.com/' in link_clean:
+                set_or_append('li_id', link)
+            elif 'facebook.com/' in link_clean:
+                set_or_append('facebook_id', link)
+            elif 'instagram.com/' in link_clean:
+                set_or_append('instagram_id', link)
+            elif 'github.com/' in link_clean:
+                set_or_append('github_id', link)
+            else:
+                set_or_append('others', link)
+
+        # Deduplicate and flatten single-item lists
+        for key, val in list(result.items()):
+            if isinstance(val, list):
+                seen = set()
+                dedup = []
+                for item in val:
+                    if item not in seen:
+                        dedup.append(item)
+                        seen.add(item)
+                if len(dedup) == 1 and key != 'others':
+                    result[key] = dedup[0]
+                else:
+                    result[key] = dedup
+
+        return result
+
+    # Process the social links we extracted from JSON
+    company_info['company_social'] = process_social_links_dict(links_websites, website)
+    print(f"✓ Processed social links: {company_info.get('company_social', {})}")
+
+    # Extract team members from HTML using same approach as BeautifulSoup
+    try:
+        links_of_profiles = []
+
+        # Find all profile links from maker cards in HTML
+        # Pattern: href="/users/@username"
+        profile_pattern = r'href=["\'](https://www\.producthunt\.com/@[^"\']+)["\']'
+        profile_matches = re.findall(profile_pattern, html_content)
+
+        # Also try relative URLs
+        profile_pattern_rel = r'href=["\'](/@[^"\']+)["\']'
+        profile_rel_matches = re.findall(profile_pattern_rel, html_content)
+
+        # Convert relative to absolute
+        for rel_url in profile_rel_matches:
+            abs_url = f"https://www.producthunt.com{rel_url}"
+            profile_matches.append(abs_url)
+
+        # Deduplicate and filter
+        links_of_profiles = list(set(profile_matches))
         links_of_profiles = [link for link in links_of_profiles if '@deleted' not in link and '@' in link]
+
+        print(f"✓ Found {len(links_of_profiles)} profile links")
+
         profiles_infos = []
 
         for profile_link in links_of_profiles:
             try:
                 await page.get(profile_link)
-                await asyncio.sleep(3)
+                await asyncio.sleep(2)
 
-                profile_info = {}
+                # Get profile HTML
+                profile_html = await page.get_content()
 
-                # Extract profile details
-                try:
-                    profile_title_elem = await page.select("div.text-18.font-light.text-light-gray.mb-1", timeout=5)
-                    profile_title = await profile_title_elem.text if profile_title_elem else ""
-                except:
-                    profile_title = ""
+                # Extract profile name and title from JSON in script tag
+                name = ""
+                title = ""
+                ph_id = profile_link.split("/@")[1] if "/@" in profile_link else ""
 
-                profile_id = profile_link.split("https://www.producthunt.com/@")[1] if "@" in profile_link else ""
+                # Extract from JSON: '"profile":{"__typename":"User","name":"...", "headline":"..."}'
+                name_match = re.search(r'"profile":\{[^}]+?"name":"([^"]+)"', profile_html)
+                if name_match:
+                    name = name_match.group(1)
+                    print(f"  ✓ Found profile: {name}")
 
-                try:
-                    profile_name_elem = await page.select("h1.text-24.font-semibold.text-dark-gray.mb-1", timeout=5)
-                    profile_name = await profile_name_elem.text if profile_name_elem else ""
-                except:
-                    profile_name = ""
+                title_match = re.search(r'"headline":"([^"]*)"', profile_html)
+                if title_match:
+                    title = title_match.group(1)
 
-                profile_links = {}
+                # Extract social links from "Links" section in HTML
+                profile_social_links = []
 
-                # Extract profile social links
-                try:
-                    await asyncio.sleep(1)
-                    links_section = await page.select("h2:contains('Links') ~ div", timeout=10)
+                # Find links after "Links" heading
+                if 'Links</h2>' in profile_html or 'Links" class=' in profile_html:
+                    # Extract all href values after Links section
+                    links_section_start = profile_html.find('Links</h2>')
+                    if links_section_start == -1:
+                        links_section_start = profile_html.find('Links"')
 
-                    if links_section:
-                        profile_link_data_result = await page.evaluate('''(section) => {
-                            const links = [];
-                            const anchors = section.querySelectorAll('a[href]');
-                            anchors.forEach(a => {
-                                const span = a.querySelector('span');
-                                if (span && a.href) {
-                                    links.push({category: span.textContent, href: a.href});
-                                }
-                            });
-                            return links;
-                        }''', links_section)
+                    if links_section_start != -1:
+                        links_section = profile_html[links_section_start:links_section_start+5000]
+                        social_pattern = r'href=["\'](https?://[^"\'>]+)["\']'
+                        social_matches = re.findall(social_pattern, links_section)
 
-                        # Extract value from RemoteObject if needed
-                        if hasattr(profile_link_data_result, 'value'):
-                            profile_link_data = profile_link_data_result.value
-                        else:
-                            profile_link_data = profile_link_data_result
+                        for href in social_matches:
+                            if "producthunt.com" not in href:
+                                clean_href = href.split("?ref=")[0].rstrip("/")
+                                profile_social_links.append(clean_href)
+                                print(f"    ↳ Found link: {clean_href}")
 
-                        if profile_link_data and isinstance(profile_link_data, list):
-                            for link_data in profile_link_data:
-                                profile_links[link_data['category']] = link_data['href']
+                profile_info = {"name": name, "title": title, "ph_id": ph_id}
 
-                except Exception as e:
-                    print(f"Error extracting profile links: {e}")
-                    profile_links = {}
+                # Process profile social links
+                if profile_social_links:
+                    processed_socials = process_social_links_dict(profile_social_links)
+                    profile_info.update(processed_socials)
+
+                profiles_infos.append(profile_info)
 
             except Exception as e:
-                print(f"Error processing profile {profile_link}: {e}")
+                print(f"  ✗ Error processing profile {profile_link}: {e}")
                 continue
 
-            # Process profile links
-            updated_links = {}
-            other_links = {}
-            allowed_social_links = {
-                'twitter': 'twitter_id',
-                'x': 'twitter_id',
-                'facebook': 'facebook_id',
-                'linkedin': 'li_id',
-                'instagram': 'instagram_id',
-                'github': 'github_id',
-                'telegram': 'telegram_id'
-            }
-
-            for category, url in profile_links.items():
-                url_lower = url.lower()
-                category_lower = category.lower()
-
-                if 'linkedin.com/in/' in url_lower:
-                    link_id = url_lower.split('linkedin.com/in/')[1].rstrip('/')
-                    updated_links['li_id'] = link_id
-                elif 'linkedin.com/company/' in url_lower:
-                    link_id = url_lower.split('linkedin.com/company/')[1].rstrip('/').split('?')[0]
-                    updated_links['company_li_id'] = link_id
-                elif 'twitter.com/' in url_lower or 'x.com/' in url_lower:
-                    twitter_handle = url_lower.split('twitter.com/')[1] if 'twitter.com/' in url_lower else url_lower.split('x.com/')[1]
-                    updated_links['twitter_id'] = twitter_handle
-                elif 'facebook.com/' in url_lower:
-                    facebook_handle = url_lower.split('facebook.com/')[1].rstrip('/')
-                    updated_links['facebook_id'] = facebook_handle
-                elif 'instagram.com/' in url_lower:
-                    instagram_handle = url_lower.split('instagram.com/')[1].rstrip('/')
-                    updated_links['instagram_id'] = instagram_handle
-                elif 'github.com/' in url_lower:
-                    github_handle = url_lower.split('github.com/')[1].rstrip('/')
-                    updated_links['github_id'] = github_handle
-                elif 'telegram.com/' in url_lower:
-                    telegram_handle = url_lower.split('telegram.com/')[1]
-                    updated_links['telegram_id'] = telegram_handle
-                elif 'work' in category_lower or 'website' in category_lower:
-                    other_links[category.lower()] = url_lower
-                else:
-                    other_links[category.lower()] = url_lower
-
-            all_other_links = other_links
-            profile_info = {
-                'name': profile_name,
-                'title': profile_title,
-                'ph_id': profile_id,
-            }
-            profile_info.update(updated_links)
-
-            if all_other_links:
-                profile_info['others'] = all_other_links
-
-            profiles_infos.append(profile_info)
-
         company_info['team'] = profiles_infos
+        print(f"✓ Total team members processed: {len(profiles_infos)}")
 
     except Exception as e:
-        print(f"Error occurred while processing profiles: {e}")
+        print(f"✗ Error occurred while processing profiles: {e}")
         company_info['team'] = []
-
-    # Website cleanup
-    website_url = company_info.get('website', '')
-    if '?ref=producthunt' in website_url:
-        website_url = website_url.replace('?ref=producthunt', '')
-
-    company_info['website'] = website_url.strip()
 
     # Save to Firestore
     try:
@@ -883,28 +663,39 @@ async def getNormalmodel(page, each_link, company_info, launch_date):
     if '?' in doc_id:
         doc_id = doc_id.split("?")[0]
 
-    if 'company_social_temp' in company_info:
-        del company_info['company_social_temp']
-
     company_info['created'] = datetime.utcnow()
     company_info['last_updated'] = datetime.utcnow()
     company_info['parallel_number'] = randint(1, 10)
     company_info['id'] = doc_id
 
+    # Ensure no temp fields exist before saving
+    if 'company_social_temp' in company_info:
+        del company_info['company_social_temp']
+        print("✓ Removed company_social_temp")
+
+    print(f"\n{'='*60}")
+    print(f"Saving to Firebase: {doc_id}")
+    print(f"{'='*60}")
+
     doc_ref = db.collection('ph').document(doc_id)
     doc_ref.set(company_info, merge=True)
+    print(f"✓ Saved to Firebase")
 
     # Process LinkedIn for company
     if 'company_social' in company_info and 'li_id' in company_info['company_social']:
         linkedin_id = company_info['company_social']['li_id']
-        if '/company/' in linkedin_id:
-            linkedin_id = linkedin_id.split("/company/")[1].rstrip("/").split("?")[0]
-        update_or_create_company_firestore_document(linkedin_id, db, doc_id)
-        create_about_task(linkedin_id)
-        print("created a company: ", linkedin_id)
+        if '/company/' in linkedin_id or 'linkedin.com/company/' in linkedin_id:
+            if 'linkedin.com/company/' in linkedin_id:
+                linkedin_id = linkedin_id.split("linkedin.com/company/")[1]
+            elif '/company/' in linkedin_id:
+                linkedin_id = linkedin_id.split("/company/")[1]
+            linkedin_id = linkedin_id.rstrip("/").split("?")[0]
+            update_or_create_company_firestore_document(linkedin_id, db, doc_id)
+            create_about_task(linkedin_id)
+            print(f"✓ Created company task: {linkedin_id}")
 
     # Process LinkedIn for profiles
-    for li_profile in profiles_infos:
+    for li_profile in company_info.get('team', []):
         if 'li_id' in li_profile:
             li_id = li_profile['li_id']
             # Clean up LinkedIn ID
@@ -919,7 +710,8 @@ async def getNormalmodel(page, each_link, company_info, launch_date):
             li_profile['li_id'] = li_id
             update_or_create_profile_document(li_id, db, li_profile)
             create_ppl_task(li_id)
-            print("created a profile: ", li_id)
+            print(f"✓ Created profile task: {li_id}")
+
 
 
 async def main():
