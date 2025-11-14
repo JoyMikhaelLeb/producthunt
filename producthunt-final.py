@@ -417,6 +417,38 @@ async def getNormalmodel(page, each_link, company_info, launch_date):
     # Get page HTML content for extraction
     html_content = await page.get_content()
 
+    # Extract product name from HTML (same as BeautifulSoup approach)
+    name = ""
+    # Try: <h2 class="text-24 font-semibold text-gray-900">Product Name</h2>
+    name_match = re.search(r'<h2[^>]*class="[^"]*text-24[^"]*font-semibold[^"]*"[^>]*>([^<]+)</h2>', html_content)
+    if name_match:
+        name = name_match.group(1).strip()
+        print(f"✓ Extracted name from h2: {name}")
+
+    # Fallback: Try h1 with similar classes
+    if not name:
+        name_match = re.search(r'<h1[^>]*class="[^"]*font-semibold[^"]*"[^>]*>([^<]+)</h1>', html_content)
+        if name_match:
+            name = name_match.group(1).strip()
+            print(f"✓ Extracted name from h1: {name}")
+
+    # Fallback: Try from meta tag
+    if not name:
+        meta_match = re.search(r'<meta property="og:title" content="([^"]+)"', html_content)
+        if meta_match:
+            # Meta title format: "Product Name - Description | Product Hunt"
+            full_title = meta_match.group(1)
+            if ' - ' in full_title:
+                name = full_title.split(' - ')[0].strip()
+            elif ' | ' in full_title:
+                name = full_title.split(' | ')[0].strip()
+            else:
+                name = full_title.strip()
+            print(f"✓ Extracted name from meta: {name}")
+
+    company_info['name'] = name or ""
+    print(f"Product name: {company_info['name']}")
+
     # Extract website URL from JSON in script tag (same as BeautifulSoup)
     website = ""
     if '"websiteUrl":"' in html_content:
