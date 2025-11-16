@@ -719,9 +719,14 @@ async def getNormalmodel(page, each_link, company_info, launch_date):
             elif '/company/' in linkedin_id:
                 linkedin_id = linkedin_id.split("/company/")[1]
             linkedin_id = linkedin_id.rstrip("/").split("?")[0]
-            update_or_create_company_firestore_document(linkedin_id, db, doc_id)
-            create_about_task(linkedin_id)
-            print(f"✓ Created company task: {linkedin_id}")
+
+            # Validate linkedin_id is not empty before creating document
+            if linkedin_id and linkedin_id.strip():
+                update_or_create_company_firestore_document(linkedin_id, db, doc_id)
+                create_about_task(linkedin_id)
+                print(f"✓ Created company task: {linkedin_id}")
+            else:
+                print(f"⚠ Skipping empty LinkedIn ID for company")
 
     # Process LinkedIn for profiles
     for li_profile in company_info.get('team', []):
@@ -736,10 +741,14 @@ async def getNormalmodel(page, each_link, company_info, launch_date):
                 li_id = li_id.split("/")[0]
             li_id = li_id.rstrip("/")
 
-            li_profile['li_id'] = li_id
-            update_or_create_profile_document(li_id, db, li_profile)
-            create_ppl_task(li_id)
-            print(f"✓ Created profile task: {li_id}")
+            # Validate li_id is not empty before creating document
+            if li_id and li_id.strip():
+                li_profile['li_id'] = li_id
+                update_or_create_profile_document(li_id, db, li_profile)
+                create_ppl_task(li_id)
+                print(f"✓ Created profile task: {li_id}")
+            else:
+                print(f"⚠ Skipping empty LinkedIn ID for profile")
 
 
 
