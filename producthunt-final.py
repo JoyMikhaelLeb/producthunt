@@ -718,7 +718,9 @@ async def getNormalmodel(page, each_link, company_info, launch_date):
                 linkedin_id = linkedin_id.split("linkedin.com/company/")[1]
             elif '/company/' in linkedin_id:
                 linkedin_id = linkedin_id.split("/company/")[1]
-            linkedin_id = linkedin_id.rstrip("/").split("?")[0]
+
+            # Clean: remove trailing /, query params, and everything after any remaining /
+            linkedin_id = linkedin_id.rstrip("/").split("?")[0].split("/")[0]
 
             # Validate linkedin_id is not empty before creating document
             if linkedin_id and linkedin_id.strip():
