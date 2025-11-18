@@ -576,9 +576,6 @@ async def getNormalmodel(page, each_link, company_info, launch_date):
                     set_or_append('li_id', li_id)
                 else:
                     set_or_append('li_id', link)
-            elif 'linkedin.com/newsletters/' in link_clean:
-                # Newsletter links go to 'others', not 'li_id'
-                set_or_append('others', link)
             elif 'linkedin.com/company/' in link_clean:
                 # Extract company ID and compare with main company
                 company_id = link_clean.split('linkedin.com/company/')[1].split('/')[0]
@@ -589,7 +586,8 @@ async def getNormalmodel(page, each_link, company_info, launch_date):
                     # Different company, add to others
                     set_or_append('others', link)
             elif 'linkedin.com/' in link_clean:
-                set_or_append('li_id', link)
+                # Any other LinkedIn links (newsletters, jobs, showcase, etc.) go to others
+                set_or_append('others', link)
             elif 'facebook.com/' in link_clean:
                 set_or_append('facebook_id', link)
             elif 'instagram.com/' in link_clean:
