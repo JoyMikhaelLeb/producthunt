@@ -562,6 +562,9 @@ async def getNormalmodel(page, each_link, company_info, launch_date):
                     set_or_append('li_id', li_id)
                 else:
                     set_or_append('li_id', link)
+            elif 'linkedin.com/newsletters/' in link_clean:
+                # Newsletter links go to 'others', not 'li_id'
+                set_or_append('others', link)
             elif 'linkedin.com/' in link_clean:
                 set_or_append('li_id', link)
             elif 'facebook.com/' in link_clean:
