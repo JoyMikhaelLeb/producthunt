@@ -18,7 +18,7 @@ import os
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.common.action_chains import ActionChains
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 import firebase_admin
 from firebase_admin import credentials
 from firebase_admin import firestore
@@ -75,9 +75,9 @@ def update_or_create_company_firestore_document(linkedin_id, db, doc_id, batch=N
     additional_fields = {
         "ph_id": doc_id,
         "parallel_number": randint(1, 10),
-        "last_updated": datetime.utcnow(),
+        "last_updated": datetime.now(UTC),
         "id": linkedin_id,
-        "created": datetime.utcnow()
+        "created": datetime.now(UTC)
     }
 
     # Use the provided batch or create a new one
@@ -101,17 +101,17 @@ def update_or_create_profile_document(profile_id, db, profile_info):
     
     # Define additional fields to be added if the profile document doesn't exist
     additional_fields = {
-        
+
         "ph_id": profile_info['ph_id'],
         "parallel_number": randint(1, 10),  # Initialize parallel number or update as needed
-        "last_updated": datetime.utcnow(),
+        "last_updated": datetime.now(UTC),
         "id": profile_id,
-        "created":datetime.utcnow()
+        "created": datetime.now(UTC)
     }
 
     if profile_doc.exists:
         # If profile document exists, update the existing fields and `last_updated`
-        profile_doc_ref.set({"ph_id": profile_info['ph_id'], "last_updated": datetime.utcnow()}, merge=True)
+        profile_doc_ref.set({"ph_id": profile_info['ph_id'], "last_updated": datetime.now(UTC)}, merge=True)
         print(f"Updated existing profile document for profile_id: {profile_id}")
     else:
         # If profile document does not exist, create it with the additional fields
@@ -994,9 +994,9 @@ def getNormalmodel(driver, each_link, company_info, launch_date):
     if 'company_social_temp' in company_info:
         del company_info['company_social_temp']
         print("Removed company_social_temp field")
-    
-    company_info['created'] = datetime.utcnow()
-    company_info['last_updated'] = datetime.utcnow()
+
+    company_info['created'] = datetime.now(UTC)
+    company_info['last_updated'] = datetime.now(UTC)
     company_info['parallel_number'] = randint(1, 10)
     company_info['id'] = doc_id
 

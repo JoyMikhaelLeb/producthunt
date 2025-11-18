@@ -13,7 +13,7 @@ from firebase_admin import firestore
 from pydantic import BaseModel
 from typing import Optional
 import datetime
-from datetime import timedelta
+from datetime import timedelta, UTC
 import random
 
 if not firebase_admin._apps:
@@ -53,7 +53,7 @@ class Request(BaseModel):
     
 def create_task(taskcreated: TaskClass):
     """Create a task and store it in db"""
-    now = datetime.datetime.utcnow()
+    now = datetime.datetime.now(UTC)
     date_str = now.strftime("%d%m%Y")
 
     task_dict = taskcreated.dict()
@@ -72,7 +72,7 @@ def create_task(taskcreated: TaskClass):
     db.collection("automation").document("current").collection("requests").document(
         task_dict["request_id"]
     ).collection("tasks").document(task_dict["id"]).set(task_dict)
-    #db.collection("automation").document("current").collection("requests").document(task_dict["request_id"]).update({"updated": datetime.datetime.utcnow()})
+    #db.collection("automation").document("current").collection("requests").document(task_dict["request_id"]).update({"updated": datetime.datetime.now(UTC)})
 
     # print(
     #     f"[LOG] Task of id {task_dict['id']} with request id {task_dict['request_id']} created."
@@ -90,7 +90,7 @@ def gen_random_digit_str(length: int):
 
 def create_request(request: Request):
     """Create a request and store it in db"""
-    now = datetime.datetime.utcnow()
+    now = datetime.datetime.now(UTC)
     date_str = now.strftime("%d%m%Y")
 
     request_dict = request.dict()
@@ -118,7 +118,7 @@ def create_request(request: Request):
     
 def task_exists(doc_id, category):
     # Check in the current request's tasks
-    request_id = f"r1_{datetime.datetime.utcnow().date().day:02}{datetime.datetime.utcnow().date().month:02}{datetime.datetime.utcnow().date().year}_adhoc_1"
+    request_id = f"r1_{datetime.datetime.now(UTC).date().day:02}{datetime.datetime.now(UTC).date().month:02}{datetime.datetime.now(UTC).date().year}_adhoc_1"
     
     # Get all tasks in the current request
     tasks = (db.collection("automation")
@@ -137,11 +137,11 @@ def create_about_task(doc_id):
     if task_exists(doc_id, "about"):
         print(f"Task for {doc_id} already exists")
         return "task already exists"
-    
-    now = datetime.datetime.utcnow()
+
+    now = datetime.datetime.now(UTC)
     date_str = now.strftime("%d%m%Y")
-    
-    request_id = f"r1_{datetime.datetime.utcnow().date().day:02}{datetime.datetime.utcnow().date().month:02}{datetime.datetime.utcnow().date().year}_adhoc_1"
+
+    request_id = f"r1_{datetime.datetime.now(UTC).date().day:02}{datetime.datetime.now(UTC).date().month:02}{datetime.datetime.now(UTC).date().year}_adhoc_1"
     if (db.collection("automation")
         .document("current")
         .collection("requests")
@@ -176,11 +176,11 @@ def create_ppl_task(doc_id):
     if task_exists(doc_id, "about"):
         print(f"Task for {doc_id} already exists")
         return "task already exists"
-    
-    now = datetime.datetime.utcnow()
+
+    now = datetime.datetime.now(UTC)
     date_str = now.strftime("%d%m%Y")
-    
-    request_id = f"r1_{datetime.datetime.utcnow().date().day:02}{datetime.datetime.utcnow().date().month:02}{datetime.datetime.utcnow().date().year}_adhoc_1"
+
+    request_id = f"r1_{datetime.datetime.now(UTC).date().day:02}{datetime.datetime.now(UTC).date().month:02}{datetime.datetime.now(UTC).date().year}_adhoc_1"
     if (db.collection("automation")
         .document("current")
         .collection("requests")
@@ -213,11 +213,11 @@ def create_numerical_task(doc_id):
     if task_exists(doc_id, "numerical_about"):
         print(f"Task for {doc_id} already exists")
         return "task already exists"
-    
-    now = datetime.datetime.utcnow()
+
+    now = datetime.datetime.now(UTC)
     date_str = now.strftime("%d%m%Y")
-    
-    request_id = f"r1_{datetime.datetime.utcnow().date().day:02}{datetime.datetime.utcnow().date().month:02}{datetime.datetime.utcnow().date().year}_adhoc_1"
+
+    request_id = f"r1_{datetime.datetime.now(UTC).date().day:02}{datetime.datetime.now(UTC).date().month:02}{datetime.datetime.now(UTC).date().year}_adhoc_1"
     if (db.collection("automation")
         .document("current")
         .collection("requests")
