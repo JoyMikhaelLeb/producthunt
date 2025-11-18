@@ -313,16 +313,18 @@ async def process_daily_leaderboard(page, page_url, launch_date, last_processed_
         if '?' in doc_id:
             doc_id = doc_id.split("?")[0]
 
-        # Skip if processed in the last 24 hours
+        # Skip if processed today (same calendar day)
         doc_ref = db.collection("ph").document(doc_id)
         doc_snapshot = doc_ref.get()
         if doc_snapshot.exists:
             doc_data = doc_snapshot.to_dict()
             if 'last_updated' in doc_data:
                 last_updated = doc_data['last_updated']
-                time_diff = datetime.utcnow() - last_updated
-                if time_diff.total_seconds() < 24 * 3600:  # 24 hours in seconds
-                    print(f"⏭ Skipping {each_link} - processed {time_diff.total_seconds() / 3600:.1f} hours ago")
+                # Handle timezone-aware datetimes
+                today = datetime.now(last_updated.tzinfo).date() if last_updated.tzinfo else datetime.utcnow().date()
+                last_updated_date = last_updated.date()
+                if last_updated_date == today:
+                    print(f"⏭ Skipping {each_link} - already processed today")
                     continue
 
         # Process the link
