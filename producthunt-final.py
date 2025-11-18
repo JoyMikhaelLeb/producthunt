@@ -313,7 +313,19 @@ async def process_daily_leaderboard(page, page_url, launch_date, last_processed_
         if '?' in doc_id:
             doc_id = doc_id.split("?")[0]
 
-        # Always process the link (even if it exists in Firebase)
+        # Skip if processed in the last 24 hours
+        doc_ref = db.collection("ph").document(doc_id)
+        doc_snapshot = doc_ref.get()
+        if doc_snapshot.exists:
+            doc_data = doc_snapshot.to_dict()
+            if 'last_updated' in doc_data:
+                last_updated = doc_data['last_updated']
+                time_diff = datetime.utcnow() - last_updated
+                if time_diff.total_seconds() < 24 * 3600:  # 24 hours in seconds
+                    print(f"⏭ Skipping {each_link} - processed {time_diff.total_seconds() / 3600:.1f} hours ago")
+                    continue
+
+        # Process the link
         print(f"Processing link: {each_link}")
         company_info = {}
         start_time = datetime.now()
@@ -526,7 +538,7 @@ async def getNormalmodel(page, each_link, company_info, launch_date):
                 print(f"✓ Found GitHub from JSON: {github_url}")
 
     # Process social links using the same logic as BeautifulSoup script
-    def process_social_links_dict(links_list, main_website=""):
+    def process_social_links_dict(links_list, main_website="", company_linkedin_id=""):
         """Convert a list of social links into a categorized dictionary"""
         if not links_list:
             return {}
@@ -565,6 +577,15 @@ async def getNormalmodel(page, each_link, company_info, launch_date):
             elif 'linkedin.com/newsletters/' in link_clean:
                 # Newsletter links go to 'others', not 'li_id'
                 set_or_append('others', link)
+            elif 'linkedin.com/company/' in link_clean:
+                # Extract company ID and compare with main company
+                company_id = link_clean.split('linkedin.com/company/')[1].split('/')[0]
+                if company_linkedin_id and company_id == company_linkedin_id.lower():
+                    # Skip if it's the same as the main company
+                    continue
+                else:
+                    # Different company, add to others
+                    set_or_append('others', link)
             elif 'linkedin.com/' in link_clean:
                 set_or_append('li_id', link)
             elif 'facebook.com/' in link_clean:
@@ -669,8 +690,17 @@ async def getNormalmodel(page, each_link, company_info, launch_date):
                 profile_info = {"name": name, "title": title, "ph_id": ph_id}
 
                 # Process profile social links
+                # Pass company LinkedIn ID to filter out duplicate company links
+                company_li_id = ""
+                if 'company_social' in company_info and 'li_id' in company_info['company_social']:
+                    company_li_id = company_info['company_social']['li_id']
+                    if 'linkedin.com/company/' in company_li_id:
+                        company_li_id = company_li_id.split('linkedin.com/company/')[1].split('/')[0]
+                    elif '/company/' in company_li_id:
+                        company_li_id = company_li_id.split('/company/')[1].split('/')[0]
+
                 if profile_social_links:
-                    processed_socials = process_social_links_dict(profile_social_links)
+                    processed_socials = process_social_links_dict(profile_social_links, company_linkedin_id=company_li_id)
                     profile_info.update(processed_socials)
 
                 profiles_infos.append(profile_info)
