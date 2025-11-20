@@ -71,17 +71,23 @@ async def login():
     """Initialize nodriver browser - automatically bypasses bot detection"""
     url = 'https://www.producthunt.com/'
 
+    # Use random port to allow multiple instances on same device
+    port = randint(9000, 9999)
+
     # nodriver automatically handles anti-bot measures
     # Use browser_executable_path if you have Chrome/Chromium installed in a specific location
     browser = await uc.start(
         headless=False,  # Set to True for headless mode
         sandbox=False,  # Disable sandbox (required on some systems)
+        port=port,  # Use unique port for this instance
         browser_args=[
             '--disable-dev-shm-usage',
             '--start-maximized',
             '--disable-blink-features=AutomationControlled',
         ]
     )
+
+    print(f"Browser started on port {port}")
 
     # Get the main tab
     page = await browser.get(url)
