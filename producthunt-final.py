@@ -71,23 +71,40 @@ async def login():
     """Initialize nodriver browser - automatically bypasses bot detection"""
     url = 'https://www.producthunt.com/'
 
-    # Use random port to allow multiple instances on same device
+    # Use random port and unique profile to allow multiple instances on same device
     port = randint(9000, 9999)
+    user_dir = f"/tmp/nodriver_ph_{port}"
 
     # nodriver automatically handles anti-bot measures
-    # Use browser_executable_path if you have Chrome/Chromium installed in a specific location
-    browser = await uc.start(
-        headless=False,  # Set to True for headless mode
-        sandbox=False,  # Disable sandbox (required on some systems)
-        port=port,  # Use unique port for this instance
-        browser_args=[
-            '--disable-dev-shm-usage',
-            '--start-maximized',
-            '--disable-blink-features=AutomationControlled',
-        ]
-    )
+    try:
+        browser = await uc.start(
+            headless=False,
+            user_data_dir=user_dir,  # Unique profile per instance
+            port=port,  # Use unique port for this instance
+            browser_args=[
+                '--no-sandbox',  # Disable sandbox
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--start-maximized',
+                '--disable-blink-features=AutomationControlled',
+            ]
+        )
+    except Exception as e:
+        print(f"Failed with default settings: {e}")
+        print("Trying with alternative configuration...")
+        # Fallback: try without user_data_dir
+        browser = await uc.start(
+            headless=False,
+            port=port,
+            browser_args=[
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--start-maximized',
+            ]
+        )
 
-    print(f"Browser started on port {port}")
+    print(f"✓ Browser started on port {port}")
 
     # Get the main tab
     page = await browser.get(url)
