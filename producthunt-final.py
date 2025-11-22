@@ -4,73 +4,119 @@
 Created on Thu Sep 26 23:07:22 2024
 
 @author: joy
+
+Converted to nodriver for better bot detection avoidance
 """
 
 import time
+import asyncio
 from random import randint
-from create_numerical_task import create_about_task,create_ppl_task
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium import webdriver
+from create_numerical_task import create_about_task, create_ppl_task
+import nodriver as uc
 import json
 import os
-from webdriver_manager.chrome import ChromeDriverManager
-from selenium.webdriver.common.action_chains import ActionChains
 import re
 from datetime import datetime, timedelta
 import firebase_admin
 from firebase_admin import credentials
 from firebase_admin import firestore
 from urllib.parse import urljoin
+
 # Firebase initialization
 if not firebase_admin._apps:
     cred = credentials.Certificate('spherical-list-284723-216944ab15f1.json')
     default_app = firebase_admin.initialize_app(cred)
 
 db = firestore.client()
-def moveToElement(driver, target_xpath):
-    
+
+
+async def safe_evaluate(page, script):
+    """Helper function to safely evaluate JavaScript and extract values from nodriver's RemoteObject"""
     try:
-        target = WebDriverWait(driver, 7).until(EC.visibility_of_element_located((By.XPATH, target_xpath)))
-        ActionChains(driver).move_to_element(target).perform()
-        return True
-    except:
+        result = await page.evaluate(script)
+
+        # If result has a value attribute, extract it
+        if hasattr(result, 'value'):
+            return result.value
+
+        # If result is already a primitive type, return it
+        if isinstance(result, (str, int, float, bool, list, dict, type(None))):
+            return result
+
+        # Try to convert to dict if it has items
+        if hasattr(result, '__dict__'):
+            return result.__dict__
+
+        return result
+    except Exception as e:
+        print(f"Error in safe_evaluate: {e}")
+        return None
+
+
+async def moveToElement(page, target_selector):
+    """Move to element using nodriver"""
+    try:
+        element = await page.select(target_selector, timeout=7)
+        if element:
+            await element.scroll_into_view()
+            await asyncio.sleep(0.5)
+            return True
+        return False
+    except Exception as e:
+        print(f"Error moving to element: {e}")
         return False
 
-def login():
-    url = 'https://www.producthunt.com/'
-    
-    chrome_options = webdriver.ChromeOptions()
-    
-    # Headless mode options
-    # chrome_options.add_argument("--headless")  # Run in headless mode
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    
-    # Other existing options
-    prefs = {"profile.default_content_setting_values.notifications": 2}
-    chrome_options.add_experimental_option("prefs", prefs)
-    
-    # chrome_options.add_argument("--incognito")
-    chrome_options.add_argument("--start-maximized")
-    
-    try:
-        driver = webdriver.Chrome(executable_path='/home/joy/Downloads/chromedriver_linux64/chromedriver', options=chrome_options)
-    except:
-        driver = webdriver.Chrome(ChromeDriverManager().install(), options=chrome_options)
-    
-    driver.get(url)
-    
-    return driver
 
-# [All previous functions remain the same until sign_in_and_extract]
+async def login():
+    """Initialize nodriver browser - automatically bypasses bot detection"""
+    url = 'https://www.producthunt.com/'
+
+    # Use random port and unique profile to allow multiple instances on same device
+    port = randint(9000, 9999)
+    user_dir = f"/tmp/nodriver_ph_{port}"
+
+    # nodriver automatically handles anti-bot measures
+    try:
+        browser = await uc.start(
+            headless=False,
+            user_data_dir=user_dir,  # Unique profile per instance
+            port=port,  # Use unique port for this instance
+            browser_args=[
+                '--no-sandbox',  # Disable sandbox
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--start-maximized',
+                '--disable-blink-features=AutomationControlled',
+            ]
+        )
+    except Exception as e:
+        print(f"Failed with default settings: {e}")
+        print("Trying with alternative configuration...")
+        # Fallback: try without user_data_dir
+        browser = await uc.start(
+            headless=False,
+            port=port,
+            browser_args=[
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--start-maximized',
+            ]
+        )
+
+    print(f"✓ Browser started on port {port}")
+
+    # Get the main tab
+    page = await browser.get(url)
+    await asyncio.sleep(3)
+
+    return browser, page
 
 
 def update_or_create_company_firestore_document(linkedin_id, db, doc_id, batch=None):
     """Optimized version that uses batching and reduces reads"""
     doc_ref = db.collection("entities").document(linkedin_id)
-    
+
     # Define fields to be set
     additional_fields = {
         "ph_id": doc_id,
@@ -84,10 +130,10 @@ def update_or_create_company_firestore_document(linkedin_id, db, doc_id, batch=N
     use_batch = batch is not None
     if not use_batch:
         batch = db.batch()
-    
+
     # Set with merge=True to update if exists or create if not
     batch.set(doc_ref, additional_fields, merge=True)
-    
+
     # Only commit if we created the batch in this function
     if not use_batch:
         batch.commit()
@@ -98,33 +144,30 @@ def update_or_create_profile_document(profile_id, db, profile_info):
     # Check if the profile document exists
     profile_doc_ref = db.collection("ppl").document(profile_id)
     profile_doc = profile_doc_ref.get()
-    
+
     # Define additional fields to be added if the profile document doesn't exist
     additional_fields = {
-        
         "ph_id": profile_info['ph_id'],
-        "parallel_number": randint(1, 10),  # Initialize parallel number or update as needed
+        "parallel_number": randint(1, 10),
         "last_updated": datetime.utcnow(),
         "id": profile_id,
-        "created":datetime.utcnow()
+        "created": datetime.utcnow()
     }
 
     if profile_doc.exists:
-        # If profile document exists, update the existing fields and `last_updated`
         profile_doc_ref.set({"ph_id": profile_info['ph_id'], "last_updated": datetime.utcnow()}, merge=True)
         print(f"Updated existing profile document for profile_id: {profile_id}")
     else:
-        # If profile document does not exist, create it with the additional fields
         profile_doc_ref.set(additional_fields)
         print(f"Created new profile document for profile_id: {profile_id} with fields: {additional_fields}")
 
 
-def sign_in_and_extract(driver, username, password, start_date, end_date, last_processed_link=None):
+async def sign_in_and_extract(page, username, password, start_date, end_date, last_processed_link=None):
     """
     Iterate through dates from start_date to end_date and process Product Hunt leaderboard
-    
+
     Args:
-    - driver: Selenium WebDriver
+    - page: nodriver page object
     - username: Product Hunt username (not used in current implementation)
     - password: Product Hunt password (not used in current implementation)
     - start_date: Start date in format 'YYYY/M/D'
@@ -134,166 +177,123 @@ def sign_in_and_extract(driver, username, password, start_date, end_date, last_p
     # Convert start and end dates to datetime objects
     start = datetime.strptime(start_date, "%Y/%m/%d")
     end = datetime.strptime(end_date, "%Y/%m/%d")
-    
+
     # Generate a list of dates
     date_range = [start + timedelta(days=x) for x in range((end - start).days + 1)]
-    
+
     # Process each date
     for current_date in date_range:
-        # break
         # Format the date for the URL and launch date
         url_date = current_date.strftime("%Y/%m/%d")
         launch_date = current_date.strftime("%d-%m-%Y")
-        
+
         # Construct the page URL
         page_url = f"https://www.producthunt.com/leaderboard/daily/{url_date}?ref=header_nav"
         print(f"Processing date: {url_date}")
-        
-        # Modify the sign_in_and_extract to accept launch_date
-        unprocessed_links = process_daily_leaderboard(driver, page_url, launch_date,last_processed_link=None,
-                              initial_wait=8,
-                              max_no_content_attempts=8,
-                              max_scroll_attempts=150,
-                              max_links=1000,
-                              base_url=None)
+
+        # Process the daily leaderboard
+        await process_daily_leaderboard(
+            page, page_url, launch_date,
+            last_processed_link=None,
+            initial_wait=8,
+            max_no_content_attempts=8,
+            max_scroll_attempts=150,
+            max_links=1000,
+            base_url=None
+        )
 
 
-
-
-
-def process_daily_leaderboard(driver, page_url, launch_date, last_processed_link=None,
+async def process_daily_leaderboard(page, page_url, launch_date, last_processed_link=None,
                               initial_wait=8,
                               max_no_content_attempts=8,
                               max_scroll_attempts=150,
                               max_links=1000,
                               base_url=None):
     """
-    Scrape links from lazy-loading leaderboard page. Returns list of unprocessed absolute URLs.
-    - driver: selenium webdriver
-    - page_url: URL to open
-    - launch_date: (kept for compatibility; not used here)
-    - last_processed_link: optional last link already processed; returned links start after it
+    Scrape links from lazy-loading leaderboard page using nodriver.
+    Returns list of unprocessed absolute URLs.
     """
-    # Navigate (replace query string only if required)
+    # Navigate
     if "?ref=header_nav" in page_url:
         search_url = page_url.replace("?ref=header_nav", "/all")
-        driver.get(search_url)
+        await page.get(search_url)
     else:
-        driver.get(page_url)
+        await page.get(page_url)
 
-    # base_url used to resolve relative hrefs
     if base_url is None:
         base_url = page_url
 
-    # initial wait for page to load
-    time.sleep(initial_wait)
+    # Initial wait for page to load
+    await asyncio.sleep(initial_wait)
 
     all_search_results = []
     seen = set()
 
     no_new_content_count = 0
     scroll_attempts = 0
-    prev_anchor_count = 0
+    prev_link_count = 0
 
-    anchors_xpath = "//*[contains(@data-test, 'post-name')]//a"
-    containers_xpath = "//*[contains(@data-test, 'post-name')]"
+    # Helper function to clean URLs
+    def clean_url(url):
+        """Remove ?ref=footer or /reviews from the end of URLs"""
+        if '?ref=footer' in url:
+            url = url.split('?ref=footer')[0]
+        if url.endswith('/reviews'):
+            url = url[:-8]
+        return url
+
+    print("Starting to extract product links...")
 
     while scroll_attempts < max_scroll_attempts:
         scroll_attempts += 1
 
-        # Get current counts (containers and anchors) BEFORE scrolling
-        containers = driver.find_elements(By.XPATH, containers_xpath)
-        anchors = driver.find_elements(By.XPATH, anchors_xpath)
-        current_container_count = len(containers)
-        current_anchor_count = len(anchors)
+        # Get page HTML source
+        try:
+            html_content = await page.get_content()
 
-        print(f"Scroll attempt {scroll_attempts}: containers={current_container_count}, anchors={current_anchor_count}")
+            # Extract product URLs using regex
+            pattern = r'href=["\'](https?://www\.producthunt\.com/products/[^"\']+)["\']'
+            matches = re.findall(pattern, html_content)
 
-        # Scroll to near last container to trigger lazy loading
-        if containers:
-            try:
-                last_container = containers[-1]
-                driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", last_container)
-                # short waits to let JS run and populate anchors/hrefs
-                time.sleep(2)
-                driver.execute_script("window.scrollBy(0, 200);")
-                time.sleep(4)
-            except Exception as e:
-                print("Targeted scroll failed:", e)
-                driver.execute_script("window.scrollBy(0, 400);")
-                time.sleep(4)
-        else:
-            # nothing yet, incremental scroll
-            driver.execute_script("window.scrollBy(0, 400);")
-            time.sleep(4)
+            # Also try to find /posts/ URLs
+            pattern_posts = r'href=["\'](/products/[^"\']+)["\']'
+            relative_matches = re.findall(pattern_posts, html_content)
 
-        # Re-fetch anchors after waiting
-        anchors = driver.find_elements(By.XPATH, anchors_xpath)
-        new_anchor_count = len(anchors)
+            # Convert relative URLs to absolute
+            for rel_url in relative_matches:
+                abs_url = urljoin(base_url, rel_url)
+                matches.append(abs_url)
 
-        # Determine whether new anchors were added
-        if new_anchor_count > prev_anchor_count:
+            # Clean and deduplicate URLs
+            for url in matches:
+                cleaned_url = clean_url(url)
+                if cleaned_url not in seen:
+                    seen.add(cleaned_url)
+                    all_search_results.append(cleaned_url)
+
+            current_link_count = len(all_search_results)
+
+        except Exception as e:
+            print(f"Error extracting links: {e}")
+            current_link_count = len(all_search_results)
+
+        print(f"Scroll attempt {scroll_attempts}: Total unique links found: {current_link_count}")
+
+        # Check if new links were added
+        if current_link_count > prev_link_count:
             no_new_content_count = 0
-            added = new_anchor_count - prev_anchor_count
-            print(f"SUCCESS: anchors increased to {new_anchor_count} (added {added})")
+            added = current_link_count - prev_link_count
+            print(f"SUCCESS: links increased to {current_link_count} (added {added})")
+
+            # Show sample of newly added links
+            if all_search_results:
+                sample_size = min(3, len(all_search_results))
+                print(f"Sample links: {all_search_results[-sample_size:]}")
         else:
             no_new_content_count += 1
-            print(f"No new anchors found (attempt {no_new_content_count}/{max_no_content_attempts})")
+            print(f"No new links found (attempt {no_new_content_count}/{max_no_content_attempts})")
 
-        prev_anchor_count = new_anchor_count
-
-        # Extract URLs from anchors with fallbacks
-        missing_href_count = 0
-        for a in anchors:
-            href = None
-            try:
-                href = a.get_attribute("href")
-            except Exception:
-                href = None
-
-            # fallback to common data attributes
-            if not href or href.strip() == "":
-                try:
-                    href = (a.get_attribute("data-href") or
-                            a.get_attribute("data-url") or
-                            a.get_attribute("data-link") or
-                            a.get_attribute("data-qa-url"))
-                except Exception:
-                    href = None
-
-            # fallback: try ancestor container attributes or onclick content
-            if not href or href.strip() == "":
-                try:
-                    parent = a.find_element(By.XPATH, "./ancestor::*[contains(@data-test, 'post-name')][1]")
-                    href = href or parent.get_attribute("data-href") or parent.get_attribute("data-url") or parent.get_attribute("data-link")
-                    if not href or href.strip() == "":
-                        onclick = parent.get_attribute("onclick") or a.get_attribute("onclick")
-                        if onclick:
-                            # grab the first quoted URL-like string inside onclick
-                            m = re.search(r"['\"](\/?[^'\" >]+)['\"]", onclick)
-                            if m:
-                                href = m.group(1)
-                except Exception:
-                    # ignore and continue
-                    pass
-
-            if not href or href.strip() == "":
-                missing_href_count += 1
-                continue
-
-            # Normalize relative URLs
-            try:
-                abs_href = urljoin(base_url, href.strip())
-            except Exception:
-                abs_href = href.strip()
-
-            # Deduplicate
-            if abs_href not in seen:
-                seen.add(abs_href)
-                all_search_results.append(abs_href)
-
-        if missing_href_count > 0:
-            print(f"Anchors without an extractable URL this pass: {missing_href_count}")
+        prev_link_count = current_link_count
 
         # Stop conditions
         if no_new_content_count >= max_no_content_attempts:
@@ -304,25 +304,19 @@ def process_daily_leaderboard(driver, page_url, launch_date, last_processed_link
             print(f"Stopping: reached max_links={max_links}.")
             break
 
-        # small pause before next scroll loop
-        time.sleep(1.0)
+        # Scroll to load more content (slower scrolling for better loading)
+        try:
+            await page.evaluate('window.scrollBy(0, 800)')
+            await asyncio.sleep(5)  # Increased from 3 to 5 seconds
+        except Exception as e:
+            print(f"Scroll error: {e}")
+            await asyncio.sleep(5)
 
-    # If nothing was found, print a sample container outerHTML for debugging
-    if len(all_search_results) == 0:
-        sample = driver.find_elements(By.XPATH, containers_xpath)[:3]
-        for n in sample:
-            try:
-                html = n.get_attribute("outerHTML")
-                print("Sample container (truncated):", (html or "")[:800])
-            except Exception:
-                pass
-
-    # Determine the start index based on last_processed_link (if provided)
+    # Determine the start index based on last_processed_link
     if last_processed_link:
         try:
             start_index = all_search_results.index(last_processed_link) + 1
         except ValueError:
-            # last_processed_link not found — process all
             start_index = 0
     else:
         start_index = 0
@@ -331,731 +325,539 @@ def process_daily_leaderboard(driver, page_url, launch_date, last_processed_link
 
     print(f"Total links found: {len(all_search_results)}")
     print(f"Unprocessed links: {len(unprocessed_links)}")
-    
-    
+
+    # Process each link
     for each_link in unprocessed_links:
-        # break
         try:
             doc_id = each_link.split("/posts/")[1].split("#")[0]
         except:
             doc_id = each_link.split("/products/")[1].split("#")[0]
-        
+
         if '?' in doc_id:
             doc_id = doc_id.split("?")[0]
+
+        # Skip if processed today (same calendar day)
         doc_ref = db.collection("ph").document(doc_id)
-        if doc_ref.get().exists:
-            print("not processing this as it already exists")
-            continue
-            
+        doc_snapshot = doc_ref.get()
+        if doc_snapshot.exists:
+            doc_data = doc_snapshot.to_dict()
+            if 'last_updated' in doc_data:
+                last_updated = doc_data['last_updated']
+                # Handle timezone-aware datetimes
+                today = datetime.now(last_updated.tzinfo).date() if last_updated.tzinfo else datetime.utcnow().date()
+                last_updated_date = last_updated.date()
+                if last_updated_date == today:
+                    print(f"⏭ Skipping {each_link} - already processed today")
+                    continue
+
+        # Process the link
         print(f"Processing link: {each_link}")
         company_info = {}
         start_time = datetime.now()
         print("Start time: ", start_time)
-        
-        
-        driver.get(each_link+"/makers/")
-        
-        
-        if  '?' in each_link:
-            driver.get(each_link.split("?")[0])
-        
-        else:
-            driver.get(each_link.split("#")[0])
-        time.sleep(2)
 
+        # Navigate to makers page
+        await page.get(each_link + "/makers/")
+
+        if '?' in each_link:
+            await page.get(each_link.split("?")[0])
+        else:
+            await page.get(each_link.split("#")[0])
+
+        await asyncio.sleep(2)
+
+        # Extract product name
         try:
-            name = driver.find_element(By.XPATH, "//h1[contains(@class, 'font-bold text-dark-gray')]").text
-            company_info['name'] = name
-        except Exception as e:
-            # 
-            try:
-                name = driver.find_element(By.XPATH, "//div[contains(@class, 'text-24 font-semibold text-dark-gray')]").text
+            name_elem = await page.select("h1.font-bold.text-dark-gray", timeout=5)
+            if name_elem:
+                name = await name_elem.text
                 company_info['name'] = name
-                
+            else:
+                raise Exception("Name not found")
+        except:
+            try:
+                name_elem = await page.select("div.text-24.font-semibold.text-dark-gray", timeout=5)
+                if name_elem:
+                    name = await name_elem.text
+                    company_info['name'] = name
+                else:
+                    raise Exception("Name not found")
             except:
                 try:
-                    name = driver.find_element(By.XPATH,"//h1[contains(@class, 'text-24 font-semibold text-gray-')]").text
-                    company_info['name'] = name
+                    name_elem = await page.select("h1.text-24.font-semibold.text-gray-", timeout=5)
+                    if name_elem:
+                        name = await name_elem.text
+                        company_info['name'] = name
+                    else:
+                        name = ""
+                        company_info['name'] = name
                 except:
-                    print(f"Error finding name element for {each_link}: {e}")
+                    print(f"Error finding name element for {each_link}")
                     name = ""
                     company_info['name'] = name
 
-        model = 'normal'
-        
-        
+        # Process based on URL type
         if 'https://www.producthunt.com/posts/' in each_link:
-            print("went here")
-            if moveToElement(driver, "//a[@class='text-16 font-normal text-blue']"):
-                model = 'normal'
-                getNormalmodel(driver, each_link, company_info, launch_date)
-            elif 'https://www.producthunt.com/products/' in driver.current_url:
-                print("condition worked")
-                getNormalmodel(driver, each_link, company_info, launch_date)
-                model = 'normal'
+            print("Processing posts URL")
+            if await moveToElement(page, "a.text-16.font-normal.text-blue"):
+                await getNormalmodel(page, each_link, company_info, launch_date)
+            elif 'https://www.producthunt.com/products/' in page.url:
+                print("Redirected to products page")
+                await getNormalmodel(page, each_link, company_info, launch_date)
             else:
-                model = 'no page'
-                
-                
-            print("Model: ", model)
-        
-            # if model == 'normal':
-            #     getNormalmodel(driver, each_link, company_info, launch_date)
-            # elif model == "no page":
-            #     getNopageModel(driver, each_link, company_info, launch_date)
-            # else:
-            #     print("Failed to extract model")
-        
+                print("No page model detected")
+
         elif 'https://www.producthunt.com/products/' in each_link:
-            getNormalmodel(driver, each_link, company_info, launch_date)
-        
-        else:  # This handles the case where it's neither posts nor products
-            print("here")
-            if moveToElement(driver, "//a[contains(@href, '/products/')]"):
-                each_link = driver.find_element_by_xpath("//a[contains(@href, '/products/')]").get_attribute("href")
-                driver.get(each_link)
-                getNormalmodel(driver, each_link, company_info, launch_date)
+            await getNormalmodel(page, each_link, company_info, launch_date)
+
+        else:
+            print("Handling alternative URL format")
+            try:
+                product_link_elem = await page.select("a[href*='/products/']", timeout=5)
+                if product_link_elem:
+                    each_link = await product_link_elem.get_attribute("href")
+                    await page.get(each_link)
+                    await getNormalmodel(page, each_link, company_info, launch_date)
+            except:
+                print("Could not find product link")
+
         end_time = datetime.now()
-        # print("End time:  ", end_time)
-        
         time_taken = end_time - start_time
-        # print(f"Time taken for {each_link}: {time_taken}")
-    
-    # Return the unprocessed links to be used in subsequent calls
+        print(f"Time taken for {each_link}: {time_taken}")
+
     return unprocessed_links
 
-def getNormalmodel(driver, each_link, company_info, launch_date):
-    
+
+async def getNormalmodel(page, each_link, company_info, launch_date):
+    """Extract product information and team details using same paths as BeautifulSoup script"""
+
     company_info['launch_date'] = launch_date
+
+    # Navigate to makers page
     try:
-        a_class_link = driver.find_element(By.XPATH, "//a[@class='text-16 font-normal text-blue']").get_attribute('href')
-        driver.get(a_class_link+ "/makers")
+        a_class_elem = await page.select("a.text-16.font-normal.text-blue", timeout=5)
+        if a_class_elem:
+            a_class_link = await a_class_elem.get_attribute('href')
+            await page.get(a_class_link + "/makers")
+        else:
+            raise Exception("Link not found")
     except:
-        if "?" in driver.current_url:
-            link_to_get = driver.current_url.split("?")[0]
-            driver.get(link_to_get + "/makers")
+        current_url = page.url
+        if "?" in current_url:
+            link_to_get = current_url.split("?")[0]
+            await page.get(link_to_get + "/makers")
         else:
-            driver.get(driver.current_url + "/makers")
-    
-    driver.implicitly_wait(5)
-    links_websites = []
-    
-    script_tag = driver.find_element(By.XPATH, '//script[contains(text(), "window[Symbol.for")]')
-    
-    # Extract the content of the script tag
-    script_content = script_tag.get_attribute('innerHTML')
-    
-    # Parse the JavaScript-like data
-    start_keyword = '"websiteUrl":"'
-    start_index = script_content.find(start_keyword) + len(start_keyword)
-    end_index = script_content.find('"', start_index)
-    
-    website= script_content[start_index:end_index]
-    
-    if website == "l.for(" or website == "":
+            await page.get(current_url + "/makers")
+
+    await asyncio.sleep(5)
+
+    # Get page HTML content for extraction
+    html_content = await page.get_content()
+
+    # Extract product name from HTML (same as BeautifulSoup approach)
+    name = ""
+    # Try: <h2 class="text-24 font-semibold text-gray-900">Product Name</h2>
+    name_match = re.search(r'<h2[^>]*class="[^"]*text-24[^"]*font-semibold[^"]*"[^>]*>([^<]+)</h2>', html_content)
+    if name_match:
+        name = name_match.group(1).strip()
+        print(f"✓ Extracted name from h2: {name}")
+
+    # Fallback: Try h1 with similar classes
+    if not name:
+        name_match = re.search(r'<h1[^>]*class="[^"]*font-semibold[^"]*"[^>]*>([^<]+)</h1>', html_content)
+        if name_match:
+            name = name_match.group(1).strip()
+            print(f"✓ Extracted name from h1: {name}")
+
+    # Fallback: Try from meta tag
+    if not name:
+        meta_match = re.search(r'<meta property="og:title" content="([^"]+)"', html_content)
+        if meta_match:
+            # Meta title format: "Product Name - Description | Product Hunt"
+            full_title = meta_match.group(1)
+            if ' - ' in full_title:
+                name = full_title.split(' - ')[0].strip()
+            elif ' | ' in full_title:
+                name = full_title.split(' | ')[0].strip()
+            else:
+                name = full_title.strip()
+            print(f"✓ Extracted name from meta: {name}")
+
+    company_info['name'] = name or ""
+    print(f"Product name: {company_info['name']}")
+
+    # Extract website URL from JSON in script tag (same as BeautifulSoup)
+    website = ""
+    if '"websiteUrl":"' in html_content:
+        start = html_content.find('"websiteUrl":"') + len('"websiteUrl":"')
+        end = html_content.find('"', start)
+        website = html_content[start:end]
+        print(f"✓ Extracted website from JSON: {website}")
+
+    # Fallback: extract from anchor tag
+    if not website:
         try:
-            website = driver.find_element_by_xpath("//div[@data-sentry-component='Links']//a").get_attribute("href")
+            website_elem = await page.select("a[href^='http']", timeout=3)
+            if website_elem:
+                href = await website_elem.get_attribute("href")
+                if href and "producthunt.com" not in href:
+                    website = href
+                    print(f"✓ Extracted website from anchor: {website}")
         except:
-            try:
-                website_element = driver.find_element_by_xpath("//div[@data-sentry-component='Status' and .//div[text()='Company Info']]//a")
-                
-                website = website_element.get_attribute("href").split("?ref")[0]
-            except:
-                website = ""
-    print("Extracted Website URL:", website)
-    company_info['website'] = website
+            pass
 
-    # Extract ALL additional website links properly from both Status and Social sections
-    try:
-        # Get links from Status section (additional websites)
-        other_Websites = driver.find_elements(By.XPATH, "//div[@data-sentry-component='Status']//a")
-        for website_link in other_Websites:
-            extra_link = website_link.get_attribute("href").split("?ref=")[0]
-            links_websites.append(extra_link)
-        
-        # ALSO get links from Social Links section 
-        social_websites = driver.find_elements(By.XPATH, "//div[@data-sentry-component='SocialLinks']//following-sibling::div//a")
-        for social_link in social_websites:
-            extra_link = social_link.get_attribute("href").split("?ref=")[0]
-            if extra_link not in links_websites:  # Avoid duplicates
-                links_websites.append(extra_link)
-        
-        print(f"Found all links: {links_websites}")
-        
-        # Store all additional links (excluding the main website) in company_social_temp
-        if len(links_websites) > 0:
-            # Remove the main website URL if it's in the list
-            filtered_links = [link for link in links_websites if link != website]
-            
-            # ONLY add links that are actually social media or special platforms
-            social_and_special_links = []
-            for link in filtered_links:
-                link_lower = link.lower()
-                # Check if it's a social media platform or special platform
-                if any(platform in link_lower for platform in [
-                    'twitter.com/', 'x.com/', 'facebook.com/', 'linkedin.com/', 
-                    'instagram.com/', 'github.com/', 'medium.com/', 'telegram.com/',
-                    'producthunt.com/r/', 'play.google.com/store', 'apps.apple.com',
-                    'itunes.apple.com', 'chrome.google.com/webstore', 
-                    'marketplace.visualstudio.com'
-                ]):
-                    social_and_special_links.append(link)
-                    print(f"Added social/special link: {link}")
-                else:
-                    print(f"Skipping regular website from temp processing: {link}")
-            
-            if social_and_special_links:
-                company_info['company_social_temp'] = social_and_special_links
-                print(f"Found {len(social_and_special_links)} social/special platform links: {social_and_special_links}")
-            else:
-                company_info['company_social_temp'] = []
-        else:
-            company_info['company_social_temp'] = []
-    except Exception as e:
-        print(f"Error extracting additional website links: {e}")
-        company_info['company_social_temp'] = []
+    company_info['website'] = website or ""
+    print(f"Website: {company_info['website']}")
 
-    allowed_social_links = {
-        'twitter': 'twitter_id',
-        'x': 'twitter_id',
-        'facebook': 'facebook_id',
-        'linkedin': 'li_id',
-        'instagram': 'instagram_id',
-        'github': 'github_id'
-    }
-    
-    social_links_div = driver.find_elements(By.XPATH, "//div[@data-sentry-component='SocialLinks']")    
-    social_links_dict = {key: [] for key in allowed_social_links.values()}
-    other_social_links = []  # This will capture Medium and other non-main platforms
-    
-    if social_links_div:
-        print("Processing SocialLinks div...")
-        for div in social_links_div:
-            sibling_divs = div.find_elements(By.XPATH, "following-sibling::div//a")
-            for sibling_div in sibling_divs:
-                try:
-                    link_soc = sibling_div.get_attribute('href')
-                    print(f"Found social link from SocialLinks: {link_soc}")
-                    
-                    # Try to get the social name from the div text
-                    try:
-                        social_name = sibling_div.find_element(By.XPATH, ".//div").text.lower()
-                        print(f"Social name: {social_name}")
-                    except:
-                        # If we can't get the name, determine it from the URL
-                        if 'twitter.com/' in link_soc.lower() or 'x.com/' in link_soc.lower():
-                            social_name = 'twitter'
-                        elif 'facebook.com/' in link_soc.lower():
-                            social_name = 'facebook'
-                        elif 'linkedin.com/' in link_soc.lower():
-                            social_name = 'linkedin'
-                        elif 'instagram.com/' in link_soc.lower():
-                            social_name = 'instagram'
-                        elif 'github.com/' in link_soc.lower():
-                            social_name = 'github'
-                        else:
-                            social_name = 'unknown'
-                        print(f"Determined social name from URL: {social_name}")
-        
-                    if social_name in allowed_social_links:
-                        category = allowed_social_links[social_name]
-                        # Store complete URLs for all platforms except LinkedIn
-                        if social_name == 'linkedin':
-                            # For LinkedIn, extract handle/path as before
-                            clean_href = link_soc
-                            if '?' in clean_href:
-                                clean_href = clean_href.split('?')[0]
-                            
-                            clean_href_lower = clean_href.lower()
-                            
-                            if '/company/' in clean_href_lower:
-                                handle = clean_href.split('/company/')[1].split('/')[0]
-                            elif '/in/' in clean_href_lower:
-                                handle = clean_href.split('/in/')[1].split('/')[0]
-                            elif '/products/' in clean_href_lower:
-                                handle = clean_href  # Store full URL for products
-                            else:
-                                handle = clean_href.split('linkedin.com/')[1].split('/')[0]
-                            
-                            social_links_dict[category].append(handle)
-                            print(f"Added LinkedIn handle {handle} to {category}")
-                        else:
-                            # For all other platforms, store complete URL
-                            social_links_dict[category].append(link_soc)
-                            print(f"Added {link_soc} to {category}")
-                    else:
-                        # Add unrecognized social links to the others array
-                        other_social_links.append(link_soc)
-                        print(f"Added {link_soc} to other_social_links")
-                except Exception as e:
-                    print(f"Error processing social link: {e}")
-                    continue
-    
-    # Store allowed social links in company_social, filter out empty lists
-    company_info['company_social'] = {k: v for k, v in social_links_dict.items() if v}
-    
-    # Store other social links under 'others' as direct array if they exist
-    if other_social_links:
-        company_info['company_social']['others'] = other_social_links
-        print(f"Added other_social_links to others: {other_social_links}")
-        
-    # Debug: Print what we have so far
-    print(f"After Social Links processing: {company_info['company_social']}")
-    print(f"company_social_temp contains: {company_info.get('company_social_temp', [])}")
-        
-    # If no social links found, try alternative method
-    if not company_info['company_social'] or company_info['company_social'] == {}:
-        print("Trying alternative social links method...")
-        try:
-            social_links_div = driver.find_element_by_xpath("//div[@data-sentry-component='SocialLinks']")
-            social_links = social_links_div.find_elements(By.XPATH, ".//a[@href]")
-        
-            for link in social_links:
-                href = link.get_attribute('href')
-                print(f"Found alternative social link: {href}")
-                found_social = False
-                href_lower = href.lower()
-                
-                # Store complete URLs for all platforms except LinkedIn
-                if 'twitter.com/' in href_lower or 'x.com/' in href_lower:
-                    # Store complete URL for Twitter/X
-                    social_links_dict['twitter_id'].append(href)
-                    found_social = True
-                    print(f"Added {href} to twitter_id")
-                    
-                elif 'facebook.com/' in href_lower:
-                    # Store complete URL for Facebook
-                    social_links_dict['facebook_id'].append(href)
-                    found_social = True
-                    print(f"Added {href} to facebook_id")
-                    
-                elif 'linkedin.com/' in href_lower:
-                    # Keep LinkedIn logic as is (extract handle/path)
-                    clean_href = href
-                    if '?' in clean_href:
-                        clean_href = clean_href.split('?')[0]
-                    
-                    clean_href_lower = clean_href.lower()
-                    
-                    if '/company/' in clean_href_lower:
-                        handle = clean_href.split('/company/')[1].split('/')[0]
-                    elif '/in/' in clean_href_lower:
-                        handle = clean_href.split('/in/')[1].split('/')[0]
-                    elif '/products/' in clean_href_lower:
-                        handle = clean_href  # Store full URL for products
-                    else:
-                        handle = clean_href.split('linkedin.com/')[1].split('/')[0]
-                    
-                    social_links_dict['li_id'].append(handle)
-                    found_social = True
-                    print(f"Added {handle} to li_id")
-                    
-                elif 'instagram.com/' in href_lower:
-                    # Store complete URL for Instagram
-                    social_links_dict['instagram_id'].append(href)
-                    found_social = True
-                    print(f"Added {href} to instagram_id")
-                    
-                elif 'github.com/' in href_lower:
-                    # Store complete URL for GitHub
-                    social_links_dict['github_id'].append(href)
-                    found_social = True
-                    print(f"Added {href} to github_id")
-                                    
-            company_info['company_social'] = {k: v for k, v in social_links_dict.items() if v}
-            
-            # Store other social links under 'others' as direct array if they exist
-            if other_social_links:
-                company_info['company_social']['others'] = other_social_links
-                print(f"Set others from alternative method: {other_social_links}")
-    
-        except Exception as e:
-            print(f"Error in alternative social links extraction: {e}")
-            company_info['company_social'] = {}
-    
-    # Process company_social_temp into the final company_social structure
-    if 'company_social_temp' in company_info and company_info['company_social_temp']:
-        print("Processing company_social_temp...")
-        # Get the main website URL to avoid duplication
-        main_website = company_info.get('website', '').lower()
-        # Clean the main website URL for comparison
-        if main_website:
-            if '?ref=' in main_website:
-                main_website_clean = main_website.split('?ref=')[0]
+    # Extract social links from JSON in script tag (same as BeautifulSoup)
+    links_websites = []
+
+    # Twitter URL
+    if '"twitterUrl":"' in html_content:
+        start = html_content.find('"twitterUrl":"') + len('"twitterUrl":"')
+        if html_content[start:start+4] == 'http':
+            end = html_content.find('"', start)
+            twitter_url = html_content[start:end]
+            if twitter_url:
+                links_websites.append(twitter_url)
+                print(f"✓ Found Twitter from JSON: {twitter_url}")
+
+    # LinkedIn URL
+    if '"linkedinUrl":"' in html_content:
+        start = html_content.find('"linkedinUrl":"') + len('"linkedinUrl":"')
+        if html_content[start:start+4] == 'http':
+            end = html_content.find('"', start)
+            linkedin_url = html_content[start:end]
+            if linkedin_url:
+                links_websites.append(linkedin_url)
+                print(f"✓ Found LinkedIn from JSON: {linkedin_url}")
+
+    # Facebook URL
+    if '"facebookUrl":"' in html_content:
+        start = html_content.find('"facebookUrl":"') + len('"facebookUrl":"')
+        if html_content[start:start+4] == 'http':
+            end = html_content.find('"', start)
+            facebook_url = html_content[start:end]
+            if facebook_url:
+                links_websites.append(facebook_url)
+                print(f"✓ Found Facebook from JSON: {facebook_url}")
+
+    # Instagram URL
+    if '"instagramUrl":"' in html_content:
+        start = html_content.find('"instagramUrl":"') + len('"instagramUrl":"')
+        if html_content[start:start+4] == 'http':
+            end = html_content.find('"', start)
+            instagram_url = html_content[start:end]
+            if instagram_url:
+                links_websites.append(instagram_url)
+                print(f"✓ Found Instagram from JSON: {instagram_url}")
+
+    # GitHub URL
+    if '"githubUrl":"' in html_content:
+        start = html_content.find('"githubUrl":"') + len('"githubUrl":"')
+        if html_content[start:start+4] == 'http':
+            end = html_content.find('"', start)
+            github_url = html_content[start:end]
+            if github_url:
+                links_websites.append(github_url)
+                print(f"✓ Found GitHub from JSON: {github_url}")
+
+    # Process social links using the same logic as BeautifulSoup script
+    def process_social_links_dict(links_list, main_website="", company_linkedin_id=""):
+        """Convert a list of social links into a categorized dictionary"""
+        if not links_list:
+            return {}
+
+        main_website_clean = main_website.lower().split('?ref=')[0].rstrip('/') if main_website else ""
+        result = {}
+
+        def set_or_append(key, val):
+            if not val:
+                return
+            if key in result:
+                if not isinstance(result[key], list):
+                    result[key] = [result[key]]
+                result[key].append(val)
             else:
-                main_website_clean = main_website
-        else:
-            main_website_clean = ''
-        
-        for temp_link in company_info['company_social_temp']:
-            # Clean the temp link for comparison
-            temp_link_clean = temp_link.lower()
-            if '?ref=' in temp_link_clean:
-                temp_link_clean = temp_link_clean.split('?ref=')[0]
-            
-            # Skip if this link is the same as the main website
-            if main_website_clean and temp_link_clean == main_website_clean:
-                print(f"Skipped main website duplicate: {temp_link}")
+                result[key] = val
+
+        for link in links_list:
+            link_clean = link.lower().split('?ref=')[0].rstrip('/')
+
+            # Skip if it's the main website
+            if main_website_clean and link_clean == main_website_clean:
                 continue
-                
-            # Check if it's a social platform - store complete URLs except for LinkedIn
-            found_social = False
-            temp_link_lower = temp_link.lower()
-            
-            if 'twitter.com/' in temp_link_lower or 'x.com/' in temp_link_lower:
-                # Store complete URL for Twitter/X
-                if 'twitter_id' not in company_info['company_social']:
-                    company_info['company_social']['twitter_id'] = []
-                elif not isinstance(company_info['company_social']['twitter_id'], list):
-                    company_info['company_social']['twitter_id'] = [company_info['company_social']['twitter_id']]
-                company_info['company_social']['twitter_id'].append(temp_link)
-                found_social = True
-                print(f"Added to twitter_id: {temp_link}")
-                
-            elif 'facebook.com/' in temp_link_lower:
-                # Store complete URL for Facebook
-                if 'facebook_id' not in company_info['company_social']:
-                    company_info['company_social']['facebook_id'] = []
-                elif not isinstance(company_info['company_social']['facebook_id'], list):
-                    company_info['company_social']['facebook_id'] = [company_info['company_social']['facebook_id']]
-                company_info['company_social']['facebook_id'].append(temp_link)
-                found_social = True
-                print(f"Added to facebook_id: {temp_link}")
-                
-            elif 'linkedin.com/' in temp_link_lower:
-                # Keep LinkedIn logic as is (store complete URL, will be processed later)
-                if 'li_id' not in company_info['company_social']:
-                    company_info['company_social']['li_id'] = []
-                elif not isinstance(company_info['company_social']['li_id'], list):
-                    company_info['company_social']['li_id'] = [company_info['company_social']['li_id']]
-                company_info['company_social']['li_id'].append(temp_link)
-                found_social = True
-                print(f"Added to li_id: {temp_link}")
-                
-            elif 'instagram.com/' in temp_link_lower:
-                # Store complete URL for Instagram
-                if 'instagram_id' not in company_info['company_social']:
-                    company_info['company_social']['instagram_id'] = []
-                elif not isinstance(company_info['company_social']['instagram_id'], list):
-                    company_info['company_social']['instagram_id'] = [company_info['company_social']['instagram_id']]
-                company_info['company_social']['instagram_id'].append(temp_link)
-                found_social = True
-                print(f"Added to instagram_id: {temp_link}")
-                
-            elif 'github.com/' in temp_link_lower:
-                # Store complete URL for GitHub
-                if 'github_id' not in company_info['company_social']:
-                    company_info['company_social']['github_id'] = []
-                elif not isinstance(company_info['company_social']['github_id'], list):
-                    company_info['company_social']['github_id'] = [company_info['company_social']['github_id']]
-                company_info['company_social']['github_id'].append(temp_link)
-                found_social = True
-                print(f"Added to github_id: {temp_link}")
-            
-            # If not a main social platform, add to others (including Medium, Telegram, etc.)
-            if not found_social:
-                # All other links go to 'others' array
-                if 'others' not in company_info['company_social']:
-                    company_info['company_social']['others'] = []
-                company_info['company_social']['others'].append(temp_link)
-                print(f"Added to others: {temp_link}")
-        
-        # Remove the temporary field
-        del company_info['company_social_temp']
-        print(f"Processed company_social_temp. Final structure: {company_info['company_social']}")
 
-    # Final processing with corrected validation
-    if 'company_social' in company_info:
-        print(f"Final processing - Before: {company_info['company_social']}")
-        # Create a copy to avoid modifying dict during iteration
-        social_copy = company_info['company_social'].copy()
-        
-        for key, value in social_copy.items():
-            if isinstance(value, list) and key != 'others':
-                if value:  # Only process if list is not empty
-                    if key == 'li_id':
-                        # Special handling for LinkedIn - ensure it's a handle/path
-                        linkedin_url = value[0] if isinstance(value, list) else value
-                        # Clean LinkedIn URL to extract handle/path if it's a full URL
-                        if 'linkedin.com/' in str(linkedin_url).lower():
-                            if '/company/' in linkedin_url:
-                                handle = linkedin_url.split('/company/')[1].split('/')[0]
-                                if '?' in handle:
-                                    handle = handle.split('?')[0]
-                            elif '/in/' in linkedin_url:
-                                handle = linkedin_url.split('/in/')[1].split('/')[0]
-                                if '?' in handle:
-                                    handle = handle.split('?')[0]
-                            else:
-                                handle = linkedin_url
-                            company_info['company_social'][key] = handle
-                            print(f"Set {key} to handle: {handle}")
-                        else:
-                            # Already a handle
-                            company_info['company_social'][key] = value[0]
-                            print(f"Set {key} to existing handle: {value[0]}")
-                    else:
-                        # For all other platforms (Twitter, Facebook, Instagram, GitHub), keep complete URL
-                        company_info['company_social'][key] = value[0]
-                        print(f"Set {key} to URL: {value[0]}")
+            # Categorize the link
+            if 'twitter.com/' in link_clean or 'x.com/' in link_clean:
+                set_or_append('twitter_id', link)
+            elif 'linkedin.com/in/' in link_clean:
+                # Extract LinkedIn ID (everything after /in/)
+                match = re.search(r'linkedin\.com/in/([^/?]+)', link_clean)
+                if match:
+                    li_id = match.group(1)
+                    set_or_append('li_id', li_id)
                 else:
-                    # Empty list, remove the key
-                    print(f"Removing empty {key}")
-                    del company_info['company_social'][key]
-        
-        print(f"Final processing - After: {company_info['company_social']}")
+                    set_or_append('li_id', link)
+            elif 'linkedin.com/company/' in link_clean:
+                # Extract company ID and compare with main company
+                company_id = link_clean.split('linkedin.com/company/')[1].split('/')[0]
+                if company_linkedin_id and company_id == company_linkedin_id.lower():
+                    # Skip if it's the same as the main company
+                    continue
+                else:
+                    # Different company, add to others
+                    set_or_append('others', link)
+            elif 'linkedin.com/' in link_clean:
+                # Any other LinkedIn links (newsletters, jobs, showcase, etc.) go to others
+                set_or_append('others', link)
+            elif 'facebook.com/' in link_clean:
+                set_or_append('facebook_id', link)
+            elif 'instagram.com/' in link_clean:
+                set_or_append('instagram_id', link)
+            elif 'github.com/' in link_clean:
+                set_or_append('github_id', link)
+            else:
+                set_or_append('others', link)
 
-    # Team extraction code
+        # Deduplicate and flatten single-item lists
+        for key, val in list(result.items()):
+            if isinstance(val, list):
+                seen = set()
+                dedup = []
+                for item in val:
+                    if item not in seen:
+                        dedup.append(item)
+                        seen.add(item)
+                if len(dedup) == 1 and key != 'others':
+                    result[key] = dedup[0]
+                else:
+                    result[key] = dedup
+
+        return result
+
+    # Process the social links we extracted from JSON
+    company_info['company_social'] = process_social_links_dict(links_websites, website)
+    print(f"✓ Processed social links: {company_info.get('company_social', {})}")
+
+    # Extract team members from HTML using same approach as BeautifulSoup
     try:
-        links_and_texts = []
-        
-        # Step 1: Get all blocks that might contain profiles
-        ul_elements = driver.find_elements(By.XPATH, "//ul[contains(@class, 'styles_makerList')]")
-        if not ul_elements:
-            ul_elements = driver.find_elements(By.XPATH, "//div[@data-sentry-component='InfiniteScroll']")
-            if not ul_elements:
-                ul_elements = driver.find_elements(By.XPATH, "//section[contains(@data-test,'maker-card-')]")
-        
-        # Step 2: Click "Show all" buttons if present
-        if moveToElement(driver, "//*[contains(text(), 'Show all')]"):
-            more_profiles_load = driver.find_elements(By.XPATH, "//*[contains(text(), 'Show all')]")
-            for one_click in more_profiles_load:
-                one_click.click()
-        
-        
-        for ul_element in ul_elements:
-            card_elements = ul_element.find_elements(By.XPATH, ".//section[contains(@data-test,'maker-card-')]")
-            if not card_elements:
-                # If ul_element itself is a maker-card, add it to card_elements
-                if "maker-card-" in ul_element.get_attribute("data-test"):
-                    card_elements = [ul_element]
-                else:
-                    continue # Skip if it's not a maker-card
-    
-            for card in card_elements:
-                # Try to find all 'a' elements directly within the card or within its immediate children
-                # This XPath will find 'a' elements regardless of whether they are direct children
-                # of the card or nested within divs within the card.
-                all_a_elements = card.find_elements(By.XPATH, ".//a[@href]")
-    
-                for a in all_a_elements:
-                    href = a.get_attribute('href')
-                    if href:
-                        links_and_texts.append(href)
-        # # Step 3: Extract hrefs
-        # for ul_element in ul_elements:
-        #     # Instead of .//li or .//section inside ul, go straight to cards
-        #     card_elements = ul_element.find_elements(By.XPATH, ".//section[contains(@data-test,'maker-card-')]")
-        #     if not card_elements:
-        #         card_elements = [ul_element]  # in case ul_element is itself a maker-card
-        
-        #     for card in card_elements:
-        #         # Main case: normal logic
-        #         div_elements = card.find_elements(By.XPATH, ".//a")
-        #         if div_elements:
-        #             for div in div_elements:
-        #                 a_elements = div.find_elements(By.XPATH, ".//a[@href]")
-        #                 for a in a_elements:
-        #                     href = a.get_attribute('href')
-        #                     if href:
-        #                         links_and_texts.append(href)
-        #         else:
-        #             # Fallback: try getting links directly from the card
-        #             fallback_links = card.find_elements(By.XPATH, ".//a[@href]")
-        #             for a in fallback_links:
-        #                 href = a.get_attribute('href')
-        #                 if href:
-        #                     links_and_texts.append(href)
+        links_of_profiles = []
 
-        links_of_profiles = list(set(links_and_texts))
+        # Find all profile links from maker cards in HTML
+        # Pattern: href="/users/@username"
+        profile_pattern = r'href=["\'](https://www\.producthunt\.com/@[^"\']+)["\']'
+        profile_matches = re.findall(profile_pattern, html_content)
+
+        # Also try relative URLs
+        profile_pattern_rel = r'href=["\'](/@[^"\']+)["\']'
+        profile_rel_matches = re.findall(profile_pattern_rel, html_content)
+
+        # Convert relative to absolute
+        for rel_url in profile_rel_matches:
+            abs_url = f"https://www.producthunt.com{rel_url}"
+            profile_matches.append(abs_url)
+
+        # Deduplicate and filter
+        links_of_profiles = list(set(profile_matches))
         links_of_profiles = [link for link in links_of_profiles if '@deleted' not in link and '@' in link]
+
+        print(f"✓ Found {len(links_of_profiles)} profile links")
+
         profiles_infos = []
 
         for profile_link in links_of_profiles:
             try:
-                driver.get(profile_link)
-                time.sleep(3)
-                WebDriverWait(driver, 20).until(
-                    EC.presence_of_element_located((By.XPATH, "//div[contains(@class, 'flex flex-col items-center gap-4')]"))
-                )
-                time.sleep(2)
-        
-                profile_info = {}
-                profile_title = driver.find_element(By.XPATH, "//div[@class='text-18 font-light text-light-gray mb-1']").text
-                profile_id = driver.current_url.split("https://www.producthunt.com/@")[1]
-                profile_name = driver.find_element(By.XPATH, "//h1[@class='text-24 font-semibold text-dark-gray mb-1']").text
-                
-                profile_links = {}
-                
-                try:
-                    time.sleep(1)
-                    links_div = WebDriverWait(driver, 10).until(
-                        EC.presence_of_element_located((By.XPATH, "//h2[text()='Links']/following-sibling::div"))
-                    )
-                    time.sleep(1)
-                    a_tags = links_div.find_elements(By.XPATH, ".//a[@href]")
-                    
-                    for a in a_tags:
-                        try:
-                            href = a.get_attribute('href')
-                            category = a.find_element(By.XPATH, ".//span").text
-                            profile_links[category] = href
-                        except Exception as e:
-                            print(f"Stale element while processing link: {e}")
-                            continue
-                            
-                except Exception:
-                    profile_links = {}
-           
-            except Exception as e:
-                print(f"Error processing profile {profile_link}: {e}")
-                continue
-                
-            updated_links = {}
-            other_links = {}
-            allowed_social_links = {
-                'twitter': 'twitter_id',
-                'x': 'twitter_id',
-                'facebook': 'facebook_id',
-                'linkedin': 'li_id',
-                'instagram': 'instagram_id',
-                'github': 'github_id',
-                'telegram': 'telegram_id'
-            }
-        
-            for category, url in profile_links.items():
-                url_lower = url.lower()
-                category_lower = category.lower()
-                if 'linkedin.com/in/' in url_lower:
-                    link_id = url_lower.split('linkedin.com/in/')[1].rstrip('/')
-                    updated_links['li_id'] = link_id
-                elif 'linkedin.com/company/' in url_lower:
-                    link_id = url_lower.split('linkedin.com/company/')[1].rstrip('/')
-                    if '?' in link_id:
-                        link_id = link_id.split("?")[0].rstrip("/")
-                    if "?trk" in link_id:
-                        link_id = link_id.split("?trk")[0].rstrip("/")
-                    updated_links['company_li_id'] = link_id
-                elif 'twitter.com/' in url_lower or 'x.com/' in url_lower:
-                    twitter_handle = url_lower.split('twitter.com/')[1] if 'twitter.com/' in url_lower else url_lower.split('x.com/')[1]
-                    updated_links['twitter_id'] = twitter_handle
-                elif 'facebook.com/' in url_lower:
-                    facebook_handle = url_lower.split('facebook.com/')[1].rstrip('/')
-                    updated_links['facebook_id'] = facebook_handle
-                elif 'instagram.com/' in url_lower:
-                    instagram_handle = url_lower.split('instagram.com/')[1].rstrip('/')
-                    updated_links['instagram_id'] = instagram_handle
-                elif 'github.com/' in url_lower:
-                    github_handle = url_lower.split('github.com/')[1].rstrip('/')
-                    updated_links['github_id'] = github_handle
-                elif 'telegram.com/' in url_lower:
-                    telegram_handle = url_lower.split('telegram.com/')[1]
-                    updated_links['telegram_id'] = telegram_handle
-                elif 'work' in category_lower or 'website' in category_lower:
-                    other_links[category.lower()] = url_lower
-                else:
-                    other_links[category.lower()] = url_lower
-        
-            all_other_links = other_links
-            profile_info = {
-                'name': profile_name,
-                'title': profile_title,
-                'ph_id': profile_id,
-            }
-            profile_info.update(updated_links)
+                await page.get(profile_link)
+                await asyncio.sleep(2)
 
-            if all_other_links:
-                profile_info['others'] = all_other_links
-            
-            profiles_infos.append(profile_info)
+                # Get profile HTML
+                profile_html = await page.get_content()
+
+                # Extract profile name and title from JSON in script tag
+                name = ""
+                title = ""
+                ph_id = profile_link.split("/@")[1] if "/@" in profile_link else ""
+
+                # Extract from JSON: '"profile":{"__typename":"User","name":"...", "headline":"..."}'
+                name_match = re.search(r'"profile":\{[^}]+?"name":"([^"]+)"', profile_html)
+                if name_match:
+                    name = name_match.group(1)
+                    print(f"  ✓ Found profile: {name}")
+
+                title_match = re.search(r'"headline":"([^"]*)"', profile_html)
+                if title_match:
+                    title = title_match.group(1)
+
+                # Extract social links from "Links" section in HTML
+                profile_social_links = []
+
+                # Find links after "Links" heading
+                if 'Links</h2>' in profile_html or 'Links" class=' in profile_html:
+                    # Extract all href values after Links section
+                    links_section_start = profile_html.find('Links</h2>')
+                    if links_section_start == -1:
+                        links_section_start = profile_html.find('Links"')
+
+                    if links_section_start != -1:
+                        links_section = profile_html[links_section_start:links_section_start+5000]
+                        social_pattern = r'href=["\'](https?://[^"\'>]+)["\']'
+                        social_matches = re.findall(social_pattern, links_section)
+
+                        for href in social_matches:
+                            if "producthunt.com" not in href:
+                                clean_href = href.split("?ref=")[0].rstrip("/")
+                                profile_social_links.append(clean_href)
+                                print(f"    ↳ Found link: {clean_href}")
+
+                profile_info = {"name": name, "title": title, "ph_id": ph_id}
+
+                # Process profile social links
+                # Pass company LinkedIn ID to filter out duplicate company links
+                company_li_id = ""
+                if 'company_social' in company_info and 'li_id' in company_info['company_social']:
+                    company_li_id = company_info['company_social']['li_id']
+                    if 'linkedin.com/company/' in company_li_id:
+                        company_li_id = company_li_id.split('linkedin.com/company/')[1].split('/')[0]
+                    elif '/company/' in company_li_id:
+                        company_li_id = company_li_id.split('/company/')[1].split('/')[0]
+
+                if profile_social_links:
+                    processed_socials = process_social_links_dict(profile_social_links, company_linkedin_id=company_li_id)
+                    profile_info.update(processed_socials)
+
+                profiles_infos.append(profile_info)
+
+            except Exception as e:
+                print(f"  ✗ Error processing profile {profile_link}: {e}")
+                continue
 
         company_info['team'] = profiles_infos
+        print(f"✓ Total team members processed: {len(profiles_infos)}")
 
     except Exception as e:
-        print(f"Error occurred while processing profiles: {e}")
+        print(f"✗ Error occurred while processing profiles: {e}")
         company_info['team'] = []
 
-    # Website cleanup and final LinkedIn processing
-    website_url = company_info['website']
-    if '?ref=producthunt' in website_url:
-        website_url = website_url.replace('?ref=producthunt', '')
-    
-    company_info['website'] = website_url.strip()
-
-    # Document creation and LinkedIn processing
+    # Save to Firestore
     try:
         doc_id = each_link.split("/posts/")[1].split("#")[0]
     except:
         doc_id = each_link.split("/products/")[1].split("#")[0]
-     
+
     if '?' in doc_id:
         doc_id = doc_id.split("?")[0]
-    
-    if 'company_social_temp' in company_info:
-        del company_info['company_social_temp']
-        print("Removed company_social_temp field")
-    
+
     company_info['created'] = datetime.utcnow()
     company_info['last_updated'] = datetime.utcnow()
     company_info['parallel_number'] = randint(1, 10)
     company_info['id'] = doc_id
 
+    # Ensure no temp fields exist before saving
+    if 'company_social_temp' in company_info:
+        del company_info['company_social_temp']
+        print("✓ Removed company_social_temp")
+
+    print(f"\n{'='*60}")
+    print(f"Saving to Firebase: {doc_id}")
+    print(f"{'='*60}")
+
     doc_ref = db.collection('ph').document(doc_id)
     doc_ref.set(company_info, merge=True)
-    
-    # LinkedIn processing for company
+    print(f"✓ Saved to Firebase")
+
+    # Process LinkedIn for company
     if 'company_social' in company_info and 'li_id' in company_info['company_social']:
         linkedin_id = company_info['company_social']['li_id']
-        if '/company/' in linkedin_id:
-            linkedin_id = linkedin_id.split("/company/")[1].rstrip("/")
-            if '?viewasmember' in linkedin_id:
-                linkedin_id = linkedin_id.split("?viewasmember")[0].rstrip("/")
-            update_or_create_company_firestore_document(linkedin_id, db, doc_id)
-            create_about_task(linkedin_id)
-            print("created a company: ", linkedin_id)
+        if '/company/' in linkedin_id or 'linkedin.com/company/' in linkedin_id:
+            if 'linkedin.com/company/' in linkedin_id:
+                linkedin_id = linkedin_id.split("linkedin.com/company/")[1]
+            elif '/company/' in linkedin_id:
+                linkedin_id = linkedin_id.split("/company/")[1]
 
-    # LinkedIn processing for profiles
-    for li_profile in profiles_infos:
+            # Clean: remove trailing /, query params, and everything after any remaining /
+            linkedin_id = linkedin_id.rstrip("/").split("?")[0].split("/")[0]
+
+            # Validate linkedin_id is not empty before creating document
+            if linkedin_id and linkedin_id.strip():
+                update_or_create_company_firestore_document(linkedin_id, db, doc_id)
+                create_about_task(linkedin_id)
+                print(f"✓ Created company task: {linkedin_id}")
+            else:
+                print(f"⚠ Skipping empty LinkedIn ID for company")
+
+    # Process LinkedIn for profiles
+    for li_profile in company_info.get('team', []):
         if 'li_id' in li_profile:
-            if '?trk' in li_profile['li_id']:
-                li_profile['li_id'] = li_profile['li_id'].split("?trk")[0]
-            if '&utm' in li_profile['li_id']:
-                li_profile['li_id'] = li_profile['li_id'].split("&utm")[0]
-            if '?utm' in li_profile['li_id']:
-                li_profile['li_id'] = li_profile['li_id'].split("?utm")[0]
-            if '?locale' in li_profile['li_id']:
-                li_profile['li_id'] = li_profile['li_id'].split("?locale")[0]
-            if '/?lipi' in li_profile['li_id']:
-                li_profile['li_id']= li_profile['li_id'].split("/?lipi")[0]
-            if '/' in li_profile['li_id']:
-                li_profile['li_id'] = li_profile['li_id'].split("/")[0]
-            li_profile['li_id'] = li_profile['li_id'].rstrip("/")
-                
-            update_or_create_profile_document(li_profile['li_id'], db, li_profile)
-            create_ppl_task(li_profile['li_id'])
-            print("created a profile: ", li_profile['li_id'])
+            li_id = li_profile['li_id']
+            # Clean up LinkedIn ID
+            for param in ['?trk', '&utm', '?utm', '?locale', '/?lipi']:
+                if param in li_id:
+                    li_id = li_id.split(param)[0]
 
-# Main execution
-task_start_date = time.asctime()
-driver = login()
-username = ""
-password = "2025/2/14"
+            if '/' in li_id:
+                li_id = li_id.split("/")[0]
+            li_id = li_id.rstrip("/")
 
-# # # Define the date range you want to process
-start_date = "2025/8/22"  # Starting date
-end_date = "2025/8/24"   # Ending date (inclusive)
-# # 
-yesterday_fulltime = datetime.now() - timedelta(days=1)
-formatted_date = yesterday_fulltime.strftime("%Y/%-m/%d")
-print(formatted_date)
-
-start_date = end_date = formatted_date
-
-# Call the new sign_in_and_extract with date range
-sign_in_and_extract(driver, username, password, start_date, end_date)
+            # Validate li_id is not empty before creating document
+            if li_id and li_id.strip():
+                li_profile['li_id'] = li_id
+                update_or_create_profile_document(li_id, db, li_profile)
+                create_ppl_task(li_id)
+                print(f"✓ Created profile task: {li_id}")
+            else:
+                print(f"⚠ Skipping empty LinkedIn ID for profile")
 
 
 
-# task_end_date = time.asctime()
+async def main():
+    """Main execution function"""
+    task_start_date = time.asctime()
+    print(f"Task started at: {task_start_date}")
+
+    browser = None
+    try:
+        # Initialize browser
+        print("Initializing browser...")
+        browser, page = await login()
+        print("Browser initialized successfully!")
+
+        username = ""
+        password = ""
+
+        # Calculate yesterday's date
+        yesterday_fulltime = datetime.now() - timedelta(days=1)
+        # Format date without leading zeros (cross-platform compatible)
+        formatted_date = f"{yesterday_fulltime.year}/{yesterday_fulltime.month}/{yesterday_fulltime.day}"
+        print(f"Processing date: {formatted_date}")
+
+        start_date = end_date = formatted_date
+
+        # Uncomment to process specific date range:
+        # start_date = "2025/8/22"
+        # end_date = "2025/8/24"
+
+        # Process Product Hunt data
+        await sign_in_and_extract(page, username, password, start_date, end_date)
+        print("Processing completed successfully!")
+
+    except KeyboardInterrupt:
+        print("\nScript interrupted by user")
+    except Exception as e:
+        print(f"Error during processing: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        # Close browser gracefully
+        if browser:
+            try:
+                print("Closing browser...")
+                browser.stop()
+                await asyncio.sleep(1)
+            except Exception as e:
+                print(f"Error closing browser: {e}")
 
 
+# Run the async main function
+if __name__ == "__main__":
+    asyncio.run(main())
