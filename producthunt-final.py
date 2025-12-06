@@ -1006,7 +1006,15 @@ def getNormalmodel(driver, each_link, company_info, launch_date):
     # LinkedIn processing for company
     if 'company_social' in company_info and 'li_id' in company_info['company_social']:
         linkedin_id = company_info['company_social']['li_id']
-        if '/company/' in linkedin_id:
+
+        # Handle case where li_id might still be a list
+        if isinstance(linkedin_id, list):
+            if linkedin_id:  # Check if list is not empty
+                linkedin_id = linkedin_id[0]
+            else:
+                linkedin_id = None
+
+        if linkedin_id and '/company/' in linkedin_id:
             linkedin_id = linkedin_id.split("/company/")[1].rstrip("/")
             if '?viewasmember' in linkedin_id:
                 linkedin_id = linkedin_id.split("?viewasmember")[0].rstrip("/")
@@ -1017,6 +1025,13 @@ def getNormalmodel(driver, each_link, company_info, launch_date):
     # LinkedIn processing for profiles
     for li_profile in profiles_infos:
         if 'li_id' in li_profile:
+            # Handle case where li_id might be a list
+            if isinstance(li_profile['li_id'], list):
+                if li_profile['li_id']:  # Check if list is not empty
+                    li_profile['li_id'] = li_profile['li_id'][0]
+                else:
+                    continue  # Skip this profile if li_id is an empty list
+
             if '?trk' in li_profile['li_id']:
                 li_profile['li_id'] = li_profile['li_id'].split("?trk")[0]
             if '&utm' in li_profile['li_id']:
@@ -1030,7 +1045,7 @@ def getNormalmodel(driver, each_link, company_info, launch_date):
             if '/' in li_profile['li_id']:
                 li_profile['li_id'] = li_profile['li_id'].split("/")[0]
             li_profile['li_id'] = li_profile['li_id'].rstrip("/")
-                
+
             update_or_create_profile_document(li_profile['li_id'], db, li_profile)
             create_ppl_task(li_profile['li_id'])
             print("created a profile: ", li_profile['li_id'])
