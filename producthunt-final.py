@@ -1039,11 +1039,11 @@ def getNormalmodel(driver, each_link, company_info, launch_date):
 task_start_date = time.asctime()
 driver = login()
 username = ""
-password = "2025/2/14"
+password = ""
 
 # # # Define the date range you want to process
-start_date = "2025/8/22"  # Starting date
-end_date = "2025/8/24"   # Ending date (inclusive)
+##start_date = "2025/8/22"  # Starting date
+##end_date = "2025/8/24"   # Ending date (inclusive)
 # # 
 yesterday_fulltime = datetime.now() - timedelta(days=1)
 formatted_date = yesterday_fulltime.strftime("%Y/%-m/%d")
