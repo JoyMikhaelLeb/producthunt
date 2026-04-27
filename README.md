@@ -34,12 +34,6 @@ pip install selenium webdriver-manager firebase-admin
 
 ## Usage
 
-Edit the date range at the bottom of the script:
-
-```python
-start_date = "2025/08/22"
-end_date   = "2025/08/24"
-```
 
 To always scrape yesterday automatically, leave the default logic:
 
