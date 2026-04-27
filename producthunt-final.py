@@ -25,7 +25,7 @@ from firebase_admin import firestore
 from urllib.parse import urljoin
 # Firebase initialization
 if not firebase_admin._apps:
-    cred = credentials.Certificate('spherical-list-284723-216944ab15f1.json')
+    cred = credentials.Certificate('key.json')
     default_app = firebase_admin.initialize_app(cred)
 
 db = firestore.client()
